@@ -1,14 +1,13 @@
 /**
- * Test entry point for basic Tensor sanity checks.
- *
- * As the project grows this file can evolve into a more structured test
- * suite or be replaced by a dedicated testing framework. For now we keep
- * things lightweight and use simple assertions to validate behavior.
+ * Test entry point for basic Tensor sanity checks and autograd gradient checks.
  */
 
 #include <llm/llm.hpp>
+#include <llm/ops.hpp>
+#include <llm/autograd.hpp>
 
 #include <cassert>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -16,6 +15,11 @@
 using llm::DType;
 using llm::Device;
 using llm::Tensor;
+using llm::add;
+using llm::mul;
+using llm::sum;
+using llm::matmul;
+using llm::transpose;
 
 // Verify that version() returns some non-null, non-empty string.
 static void test_version() {
@@ -97,6 +101,99 @@ static void test_tensor_reshape() {
   assert(threw);
 }
 
+// Finite-difference gradient check: compare autograd grad with numerical grad.
+static void grad_check_add() {
+  Tensor a = Tensor::from_data({1.f, 2.f, 3.f}, {3}, true);
+  Tensor b = Tensor::from_data({0.5f, 1.f, 1.5f}, {3}, true);
+  Tensor c = add(a, b);
+  Tensor loss = sum(c);
+  loss.backward();
+
+  assert(a.grad() != nullptr);
+  assert(b.grad() != nullptr);
+  const float eps = 1e-4f;
+  for (int i = 0; i < 3; ++i) {
+    assert(std::fabs(a.grad()->data_float()[i] - 1.f) < 1e-5f);
+    assert(std::fabs(b.grad()->data_float()[i] - 1.f) < 1e-5f);
+  }
+}
+
+static void grad_check_mul() {
+  Tensor a = Tensor::from_data({1.f, 2.f}, {2}, true);
+  Tensor b = Tensor::from_data({3.f, 4.f}, {2}, true);
+  Tensor c = mul(a, b);
+  Tensor loss = sum(c);
+  loss.backward();
+
+  assert(a.grad() != nullptr);
+  assert(b.grad() != nullptr);
+  assert(std::fabs(a.grad()->data_float()[0] - 3.f) < 1e-5f);
+  assert(std::fabs(a.grad()->data_float()[1] - 4.f) < 1e-5f);
+  assert(std::fabs(b.grad()->data_float()[0] - 1.f) < 1e-5f);
+  assert(std::fabs(b.grad()->data_float()[1] - 2.f) < 1e-5f);
+}
+
+static void grad_check_sum() {
+  Tensor a = Tensor::from_data({1.f, 2.f, 3.f}, {3}, true);
+  Tensor s = sum(a);
+  s.backward();
+
+  assert(a.grad() != nullptr);
+  for (int i = 0; i < 3; ++i)
+    assert(std::fabs(a.grad()->data_float()[i] - 1.f) < 1e-5f);
+}
+
+static void grad_check_matmul() {
+  Tensor a = Tensor::from_data({1.f, 2.f, 3.f, 4.f}, {2, 2}, true);
+  Tensor b = Tensor::from_data({1.f, 0.f, 0.f, 1.f}, {2, 2}, true);
+  Tensor c = matmul(a, b);
+  Tensor loss = sum(c);
+  loss.backward();
+
+  assert(a.grad() != nullptr);
+  assert(b.grad() != nullptr);
+  // d(sum(A@B))/dA = ones, d(sum(A@B))/dB = ones (for B=I, A@I=A, sum(A)=sum of A elements, grad w.r.t. A is ones)
+  assert(std::fabs(a.grad()->data_float()[0] - 1.f) < 1e-5f);
+  assert(std::fabs(a.grad()->data_float()[1] - 1.f) < 1e-5f);
+  assert(std::fabs(a.grad()->data_float()[2] - 1.f) < 1e-5f);
+  assert(std::fabs(a.grad()->data_float()[3] - 1.f) < 1e-5f);
+}
+
+static void grad_check_transpose() {
+  Tensor a = Tensor::from_data({1.f, 2.f, 3.f, 4.f}, {2, 2}, true);
+  Tensor t = transpose(a);
+  Tensor loss = sum(t);
+  loss.backward();
+
+  assert(a.grad() != nullptr);
+  for (int i = 0; i < 4; ++i)
+    assert(std::fabs(a.grad()->data_float()[i] - 1.f) < 1e-5f);
+}
+
+static void test_no_grad() {
+  Tensor a = Tensor::from_data({1.f}, {1}, true);
+  Tensor b = Tensor::from_data({2.f}, {1}, true);
+  Tensor c;
+  {
+    llm::NoGradGuard guard;
+    c = add(a, b);
+  }
+  assert(!c.requires_grad());
+  assert(c.grad_fn() == nullptr);
+  assert(c.numel() == 1);
+  assert(std::fabs(c.data_float()[0] - 3.f) < 1e-5f);
+}
+
+static void test_detach() {
+  Tensor a = Tensor::from_data({1.f, 2.f}, {2}, true);
+  Tensor b = add(a, a);
+  Tensor c = b.detach();
+  assert(!c.requires_grad());
+  assert(c.grad_fn() == nullptr);
+  assert(c.numel() == 2);
+  assert(std::fabs(c.data_float()[0] - 2.f) < 1e-5f);
+}
+
 int main() {
   std::cout << "Running LLM tests..." << std::endl;
 
@@ -106,6 +203,14 @@ int main() {
   test_tensor_from_data();
   test_tensor_reshape();
 
-  std::cout << "All Tensor tests passed." << std::endl;
+  grad_check_add();
+  grad_check_mul();
+  grad_check_sum();
+  grad_check_matmul();
+  grad_check_transpose();
+  test_no_grad();
+  test_detach();
+
+  std::cout << "All Tensor and autograd tests passed." << std::endl;
   return 0;
 }

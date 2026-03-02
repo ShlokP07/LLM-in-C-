@@ -1,163 +1,170 @@
-/**
- * Tensor implementation.
- *
- * This file provides the concrete implementation behind the lightweight
- * `llm::Tensor` handle declared in `tensor.hpp`. It focuses on a simple,
- * contiguous, CPU-backed layout, with helpers for allocation, reshaping,
- * and basic debug printing. Higher-level ops and autograd will build on
- * top of this layer.
- */
-
 #include <llm/tensor.hpp>
+#include <llm/autograd.hpp>
 
 #include <algorithm>
 #include <cstring>
-#include <stdexcept>
 #include <sstream>
+#include <stdexcept>
 
-namespace llm
-{
+namespace llm {
 
-  // Compute the total number of elements implied by a shape vector, with
-  // basic validation that each dimension is positive.
-  int64_t Tensor::compute_numel(const std::vector<int64_t> &shape)
-  {
-    if (shape.empty())
-    {
-      return 0;
-    }
-    int64_t n = 1;
-    for (int64_t d : shape)
-    {
-      if (d <= 0)
-      {
-        throw std::invalid_argument("Tensor shape dimensions must be positive");
-      }
-      n *= d;
-    }
-    return n;
+namespace {
+
+int64_t compute_numel(const std::vector<int64_t>& shape) {
+  if (shape.empty()) return 0;
+  int64_t n = 1;
+  for (int64_t d : shape) {
+    if (d <= 0) throw std::invalid_argument("Tensor shape dimensions must be positive");
+    n *= d;
   }
+  return n;
+}
 
-  // Row-major contiguous strides: the last dimension has stride 1, and each
-  // preceding dimension multiplies the size of the next one.
-  std::vector<int64_t> Tensor::compute_strides(const std::vector<int64_t> &shape)
-  {
-    std::vector<int64_t> strides(shape.size());
-    int64_t stride = 1;
-    for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i)
-    {
-      strides[i] = stride;
-      stride *= shape[i];
-    }
-    return strides;
+std::vector<int64_t> compute_strides(const std::vector<int64_t>& shape) {
+  std::vector<int64_t> strides(shape.size());
+  int64_t stride = 1;
+  for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
+    strides[i] = stride;
+    stride *= shape[i];
   }
+  return strides;
+}
 
-  // Map a DType to its size in bytes. This keeps allocation logic and
-  // memcpy calls type-agnostic.
-  std::size_t Tensor::element_size(DType dt)
-  {
-    switch (dt)
-    {
-    case DType::Float32:
-      return sizeof(float);
-    case DType::Int64:
-      return sizeof(int64_t);
-    default:
-      throw std::runtime_error("Unsupported DType in element_size");
-    }
+std::size_t element_size(DType dt) {
+  switch (dt) {
+    case DType::Float32: return sizeof(float);
+    case DType::Int64: return sizeof(int64_t);
+    default: throw std::runtime_error("Unsupported DType in element_size");
   }
+}
 
-  Tensor::Tensor(const std::vector<int64_t> &shape,
-                 DType dtype,
-                 Device device,
-                 bool requires_grad)
-      : shape_(shape),
-        strides_(compute_strides(shape)),
-        numel_(compute_numel(shape)),
-        dtype_(dtype),
-        device_(device),
-        requires_grad_(requires_grad)
-  {
-    const std::size_t bytes = static_cast<std::size_t>(numel_) * element_size(dtype_);
-    // Allocate raw storage and wrap it in shared_ptr with a custom deleter so
-    // that copies of Tensor share ownership of the same underlying buffer.
-    void *ptr = operator new(bytes);
-    storage_.reset(ptr, [](void *p)
-                   { operator delete(p); });
-    // Zero initialize for determinism.
-    std::memset(storage_.get(), 0, bytes);
+}  // namespace
+
+Tensor::Tensor(const std::vector<int64_t>& shape, DType dtype, Device device, bool requires_grad) {
+  impl_ = std::make_shared<TensorImpl>();
+  impl_->shape = shape;
+  impl_->strides = compute_strides(shape);
+  impl_->numel = compute_numel(shape);
+  impl_->dtype = dtype;
+  impl_->device = device;
+  impl_->requires_grad = requires_grad;
+  const std::size_t bytes = static_cast<std::size_t>(impl_->numel) * element_size(dtype);
+  void* ptr = operator new(bytes);
+  impl_->storage.reset(ptr, [](void* p) { operator delete(p); });
+  std::memset(impl_->storage.get(), 0, bytes);
+}
+
+Tensor Tensor::zeros(const std::vector<int64_t>& shape, DType dtype, Device device, bool requires_grad) {
+  return Tensor(shape, dtype, device, requires_grad);
+}
+
+Tensor Tensor::from_data(std::vector<float> data, const std::vector<int64_t>& shape, bool requires_grad) {
+  Tensor t(shape, DType::Float32, Device::cpu(), requires_grad);
+  if (t.numel() != static_cast<int64_t>(data.size()))
+    throw std::invalid_argument("from_data: data size does not match shape numel");
+  std::memcpy(t.data(), data.data(), data.size() * sizeof(float));
+  return t;
+}
+
+const std::vector<int64_t>& Tensor::shape() const {
+  if (!impl_) throw std::runtime_error("Tensor: null impl");
+  return impl_->shape;
+}
+const std::vector<int64_t>& Tensor::strides() const {
+  if (!impl_) throw std::runtime_error("Tensor: null impl");
+  return impl_->strides;
+}
+int64_t Tensor::dim() const { return static_cast<int64_t>(shape().size()); }
+int64_t Tensor::numel() const { return impl_ ? impl_->numel : 0; }
+DType Tensor::dtype() const { return impl_ ? impl_->dtype : DType::Float32; }
+Device Tensor::device() const { return impl_ ? impl_->device : Device::cpu(); }
+bool Tensor::requires_grad() const { return impl_ && impl_->requires_grad; }
+void Tensor::set_requires_grad(bool v) { if (impl_) impl_->requires_grad = v; }
+
+std::shared_ptr<Tensor> Tensor::grad() const { return impl_ ? impl_->grad : nullptr; }
+void Tensor::set_grad(const std::shared_ptr<Tensor>& g) { if (impl_) impl_->grad = g; }
+
+void* Tensor::data() { return impl_ ? impl_->storage.get() : nullptr; }
+const void* Tensor::data() const { return impl_ ? impl_->storage.get() : nullptr; }
+float* Tensor::data_float() {
+  return (impl_ && impl_->dtype == DType::Float32) ? static_cast<float*>(impl_->storage.get()) : nullptr;
+}
+const float* Tensor::data_float() const {
+  return (impl_ && impl_->dtype == DType::Float32) ? static_cast<const float*>(impl_->storage.get()) : nullptr;
+}
+int64_t* Tensor::data_int64() {
+  return (impl_ && impl_->dtype == DType::Int64) ? static_cast<int64_t*>(impl_->storage.get()) : nullptr;
+}
+const int64_t* Tensor::data_int64() const {
+  return (impl_ && impl_->dtype == DType::Int64) ? static_cast<const int64_t*>(impl_->storage.get()) : nullptr;
+}
+
+Tensor Tensor::reshape(const std::vector<int64_t>& new_shape) const {
+  if (!impl_) throw std::runtime_error("Tensor: null impl");
+  int64_t new_numel = compute_numel(new_shape);
+  if (new_numel != impl_->numel)
+    throw std::invalid_argument("reshape: total number of elements must not change");
+  auto impl = std::make_shared<TensorImpl>();
+  impl->storage = impl_->storage;
+  impl->shape = new_shape;
+  impl->strides = compute_strides(new_shape);
+  impl->numel = impl_->numel;
+  impl->dtype = impl_->dtype;
+  impl->device = impl_->device;
+  impl->requires_grad = false;
+  return Tensor(impl);
+}
+
+Tensor Tensor::detach() const {
+  if (!impl_) return Tensor();
+  auto impl = std::make_shared<TensorImpl>();
+  impl->storage = impl_->storage;
+  impl->shape = impl_->shape;
+  impl->strides = impl_->strides;
+  impl->numel = impl_->numel;
+  impl->dtype = impl_->dtype;
+  impl->device = impl_->device;
+  impl->requires_grad = false;
+  return Tensor(impl);
+}
+
+void Tensor::backward() {
+  if (impl_) run_backward(*this);
+}
+
+void Tensor::accumulate_grad(const Tensor& g) {
+  if (!impl_) return;
+  if (g.numel() != impl_->numel || g.dtype() != impl_->dtype)
+    throw std::invalid_argument("accumulate_grad: shape/dtype mismatch");
+  if (!impl_->grad)
+    impl_->grad = std::make_shared<Tensor>(g);
+  else {
+    const float* src = g.data_float();
+    float* dst = impl_->grad->data_float();
+    for (int64_t i = 0; i < impl_->numel; ++i) dst[i] += src[i];
   }
+}
 
-  Tensor Tensor::zeros(const std::vector<int64_t> &shape,
-                       DType dtype,
-                       Device device,
-                       bool requires_grad)
-  {
-    return Tensor(shape, dtype, device, requires_grad);
+void Tensor::set_grad_fn(std::shared_ptr<AutogradNode> fn) {
+  if (impl_) impl_->grad_fn = std::move(fn);
+}
+
+std::shared_ptr<AutogradNode> Tensor::grad_fn() const {
+  return impl_ ? impl_->grad_fn : nullptr;
+}
+
+std::string Tensor::debug_string() const {
+  if (!impl_) return "Tensor(null)";
+  std::ostringstream oss;
+  oss << "Tensor(shape=[";
+  for (size_t i = 0; i < impl_->shape.size(); ++i) {
+    oss << impl_->shape[i];
+    if (i + 1 < impl_->shape.size()) oss << ", ";
   }
+  oss << "], dtype=";
+  oss << (impl_->dtype == DType::Float32 ? "float32" : "int64");
+  oss << ", requires_grad=" << (impl_->requires_grad ? "true" : "false") << ")";
+  return oss.str();
+}
 
-  Tensor Tensor::from_data(std::vector<float> data,
-                           const std::vector<int64_t> &shape,
-                           bool requires_grad)
-  {
-    Tensor t(shape, DType::Float32, Device::cpu(), requires_grad);
-    if (t.numel() != static_cast<int64_t>(data.size()))
-    {
-      throw std::invalid_argument("from_data: data size does not match shape numel");
-    }
-    std::memcpy(t.data(), data.data(),
-                static_cast<std::size_t>(data.size()) * sizeof(float));
-    return t;
-  }
-
-  Tensor Tensor::reshape(const std::vector<int64_t> &new_shape) const
-  {
-    int64_t new_numel = compute_numel(new_shape);
-    if (new_numel != numel_)
-    {
-      throw std::invalid_argument("reshape: total number of elements must not change");
-    }
-
-    // Shallow copy: new Tensor views the same storage with updated metadata.
-    Tensor out;
-    out.shape_ = new_shape;
-    out.strides_ = compute_strides(new_shape);
-    out.numel_ = numel_;
-    out.dtype_ = dtype_;
-    out.device_ = device_;
-    out.requires_grad_ = requires_grad_;
-    out.storage_ = storage_; // share underlying data
-    out.grad_fn_ = grad_fn_;
-    out.grad_ = grad_;
-    return out;
-  }
-
-  std::string Tensor::debug_string() const
-  {
-    std::ostringstream oss;
-    oss << "Tensor(shape=[";
-    for (std::size_t i = 0; i < shape_.size(); ++i)
-    {
-      oss << shape_[i];
-      if (i + 1 < shape_.size())
-      {
-        oss << ", ";
-      }
-    }
-    oss << "], dtype=";
-    switch (dtype_)
-    {
-    case DType::Float32:
-      oss << "float32";
-      break;
-    case DType::Int64:
-      oss << "int64";
-      break;
-    }
-    oss << ", device=CPU";
-    oss << ", requires_grad=" << (requires_grad_ ? "true" : "false");
-    oss << ")";
-    return oss.str();
-  }
-
-} // namespace llm
+}  // namespace llm

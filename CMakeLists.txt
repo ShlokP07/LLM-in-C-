@@ -45,13 +45,12 @@ set(LLM_SOURCES
   src/utils/checkpoint.cpp
 )
 
-# Create library (start with stub - add ${LLM_SOURCES} as you implement)
+# Create library (Phase 1: tensor + autograd + ops)
 add_library(llm_core STATIC
   src/core_stub.cpp
   src/tensor.cpp
-  # Uncomment and add as you implement:
-  # src/autograd.cpp src/ops.cpp
-  # src/nn/*.cpp src/optim/*.cpp src/data/*.cpp src/utils/*.cpp
+  src/autograd.cpp
+  src/ops.cpp
 )
 
 target_include_directories(llm_core PUBLIC

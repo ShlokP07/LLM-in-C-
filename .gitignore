@@ -38,3 +38,7 @@ vcpkg_installed/
 *.pt
 *.ckpt
 *.bin
+
+# Implementation notes (local planning)
+**/IMPLEMENTATION_PLAN.md
+*implementation*.md
