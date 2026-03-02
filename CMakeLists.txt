@@ -45,12 +45,13 @@ set(LLM_SOURCES
   src/utils/checkpoint.cpp
 )
 
-# Create library (Phase 1: tensor + autograd + ops)
+# Create library (Phase 1: tensor + autograd + ops + basic nn module)
 add_library(llm_core STATIC
   src/core_stub.cpp
   src/tensor.cpp
   src/autograd.cpp
   src/ops.cpp
+  src/nn/module.cpp
 )
 
 target_include_directories(llm_core PUBLIC

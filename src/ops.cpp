@@ -18,7 +18,7 @@ void expect_same_shape(const Tensor& a, const Tensor& b) {
     throw std::invalid_argument("ops: shape mismatch");
 }
 
-// --- Add ---
+// Add: gradient passes through unchanged to both inputs.
 class AddBackward : public AutogradNode {
 public:
   AddBackward(std::shared_ptr<Tensor> a, std::shared_ptr<Tensor> b)
@@ -38,7 +38,7 @@ private:
   std::shared_ptr<Tensor> a_, b_;
 };
 
-// --- Mul ---
+// Mul: d(a*b)/da = b, d(a*b)/db = a. Need a_val, b_val for the backward.
 class MulBackward : public AutogradNode {
 public:
   MulBackward(std::shared_ptr<Tensor> a, std::shared_ptr<Tensor> b,
@@ -63,7 +63,7 @@ private:
   std::shared_ptr<Tensor> a_, b_, a_val_, b_val_;
 };
 
-// --- Sum ---
+// Sum: gradient is scalar broadcast to input shape.
 class SumBackward : public AutogradNode {
 public:
   explicit SumBackward(std::shared_ptr<Tensor> a) : a_(std::move(a)) {}
@@ -83,7 +83,7 @@ private:
   std::shared_ptr<Tensor> a_;
 };
 
-// --- Transpose ---
+// Transpose: gradient of transpose is transpose of gradient.
 class TransposeBackward : public AutogradNode {
 public:
   explicit TransposeBackward(std::shared_ptr<Tensor> a) : a_(std::move(a)) {}

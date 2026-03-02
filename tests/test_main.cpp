@@ -5,16 +5,20 @@
 #include <llm/llm.hpp>
 #include <llm/ops.hpp>
 #include <llm/autograd.hpp>
+#include <llm/module.hpp>
 
 #include <cassert>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
+#include <memory>
 
 using llm::DType;
 using llm::Device;
 using llm::Tensor;
+using llm::Module;
+using llm::Parameter;
 using llm::add;
 using llm::mul;
 using llm::sum;
@@ -175,7 +179,7 @@ static void test_no_grad() {
   Tensor b = Tensor::from_data({2.f}, {1}, true);
   Tensor c;
   {
-    llm::NoGradGuard guard;
+    llm::NoGradGuard guard;  // ops in this scope don't build the graph
     c = add(a, b);
   }
   assert(!c.requires_grad());
@@ -187,11 +191,54 @@ static void test_no_grad() {
 static void test_detach() {
   Tensor a = Tensor::from_data({1.f, 2.f}, {2}, true);
   Tensor b = add(a, a);
-  Tensor c = b.detach();
+  Tensor c = b.detach();  // same data, no grad_fn (stops backward here)
   assert(!c.requires_grad());
   assert(c.grad_fn() == nullptr);
   assert(c.numel() == 2);
   assert(std::fabs(c.data_float()[0] - 2.f) < 1e-5f);
+}
+
+// Simple test modules to verify parameter registration and train/eval propagation.
+class LeafModule : public Module {
+public:
+  LeafModule() {
+    register_parameter("w", Parameter::zeros({1}));
+  }
+};
+
+class ParentModule : public Module {
+public:
+  ParentModule() {
+    register_parameter("b", Parameter::zeros({1}));
+    child = std::make_shared<LeafModule>();
+    register_module("child", child);
+  }
+
+  std::shared_ptr<LeafModule> child;
+};
+
+static void test_module_parameters_and_modes() {
+  ParentModule m;
+
+  // parameters() should include both parent and child parameters.
+  auto params = m.parameters();
+  assert(params.size() == 2);
+  for (Parameter* p : params) {
+    assert(p != nullptr);
+    assert(p->requires_grad());
+  }
+
+  // train()/eval() should propagate to submodules.
+  assert(m.is_training());
+  assert(m.child->is_training());
+
+  m.eval();
+  assert(!m.is_training());
+  assert(!m.child->is_training());
+
+  m.train();
+  assert(m.is_training());
+  assert(m.child->is_training());
 }
 
 int main() {
@@ -210,6 +257,7 @@ int main() {
   grad_check_transpose();
   test_no_grad();
   test_detach();
+  test_module_parameters_and_modes();
 
   std::cout << "All Tensor and autograd tests passed." << std::endl;
   return 0;

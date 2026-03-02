@@ -10,6 +10,7 @@ namespace llm {
 
 namespace {
 
+// Total element count; throws if any dim <= 0.
 int64_t compute_numel(const std::vector<int64_t>& shape) {
   if (shape.empty()) return 0;
   int64_t n = 1;
@@ -20,6 +21,7 @@ int64_t compute_numel(const std::vector<int64_t>& shape) {
   return n;
 }
 
+// Row-major strides: strides[i] = product of shape[i+1..end]
 std::vector<int64_t> compute_strides(const std::vector<int64_t>& shape) {
   std::vector<int64_t> strides(shape.size());
   int64_t stride = 1;
@@ -50,7 +52,7 @@ Tensor::Tensor(const std::vector<int64_t>& shape, DType dtype, Device device, bo
   impl_->requires_grad = requires_grad;
   const std::size_t bytes = static_cast<std::size_t>(impl_->numel) * element_size(dtype);
   void* ptr = operator new(bytes);
-  impl_->storage.reset(ptr, [](void* p) { operator delete(p); });
+  impl_->storage.reset(ptr, [](void* p) { operator delete(p); });  // custom deleter for void*
   std::memset(impl_->storage.get(), 0, bytes);
 }
 
@@ -105,7 +107,7 @@ Tensor Tensor::reshape(const std::vector<int64_t>& new_shape) const {
   if (new_numel != impl_->numel)
     throw std::invalid_argument("reshape: total number of elements must not change");
   auto impl = std::make_shared<TensorImpl>();
-  impl->storage = impl_->storage;
+  impl->storage = impl_->storage;  // share storage, no copy
   impl->shape = new_shape;
   impl->strides = compute_strides(new_shape);
   impl->numel = impl_->numel;
@@ -115,6 +117,7 @@ Tensor Tensor::reshape(const std::vector<int64_t>& new_shape) const {
   return Tensor(impl);
 }
 
+// Copy with same data but no grad tracking (breaks the graph).
 Tensor Tensor::detach() const {
   if (!impl_) return Tensor();
   auto impl = std::make_shared<TensorImpl>();
@@ -132,6 +135,7 @@ void Tensor::backward() {
   if (impl_) run_backward(*this);
 }
 
+// Add g into this tensor's grad. Used when tensor feeds into multiple ops.
 void Tensor::accumulate_grad(const Tensor& g) {
   if (!impl_) return;
   if (g.numel() != impl_->numel || g.dtype() != impl_->dtype)

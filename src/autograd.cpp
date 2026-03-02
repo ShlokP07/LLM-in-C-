@@ -24,10 +24,9 @@ Tensor ones_like(const Tensor& t) {
   return out;
 }
 
-// (node, output tensor that owns this node) for backward.
 using NodeOutputPair = std::pair<std::shared_ptr<AutogradNode>, Tensor*>;
 
-// Reverse topological order: (node, output tensor) for each node.
+// DFS post-order over the graph = reverse topo order for backward pass.
 std::vector<NodeOutputPair> reverse_topo(Tensor& root) {
   std::vector<NodeOutputPair> order;
   std::unordered_set<AutogradNode*> visited;
@@ -69,7 +68,7 @@ void run_backward(Tensor& root) {
     throw std::runtime_error("backward: only float32 tensors supported");
   }
   std::shared_ptr<Tensor> grad = root.grad();
-  if (!grad && root.requires_grad()) {
+  if (!grad && root.requires_grad()) {  // default: d(loss)/d(loss) = 1
     grad = std::make_shared<Tensor>(ones_like(root));
     root.set_grad(grad);
   }

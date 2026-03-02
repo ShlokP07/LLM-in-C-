@@ -84,16 +84,17 @@ namespace llm {
     std::shared_ptr<TensorImpl> impl_;
   };
 
+  // Internal representation. Tensor is a thin handle; impl_ is shared across copies.
   struct TensorImpl {
-    std::shared_ptr<void> storage;
+    std::shared_ptr<void> storage;   // raw bytes, freed via custom deleter
     std::vector<int64_t> shape;
-    std::vector<int64_t> strides;
+    std::vector<int64_t> strides;    // row-major: strides[i] = product of shape[i+1..]
     int64_t numel = 0;
     DType dtype = DType::Float32;
     Device device = Device::cpu();
     bool requires_grad = false;
-    std::shared_ptr<AutogradNode> grad_fn;
-    std::shared_ptr<Tensor> grad;
+    std::shared_ptr<AutogradNode> grad_fn;  // op that produced this tensor
+    std::shared_ptr<Tensor> grad;           // accumulated gradient (filled by backward)
   };
 
 }  // namespace llm
