@@ -43,4 +43,11 @@ Tensor transpose(const Tensor& a);
 /** Ones with same shape as t (float32, no grad). */
 Tensor ones_like(const Tensor& t);
 
+/**
+ * Gather rows from a 2D tensor by int64 indices.
+ * weight: (V, D) float32, indices: (N,) int64 -> output (N, D).
+ * output[i, j] = weight[indices[i], j]. Indices must be in [0, V).
+ */
+Tensor gather(const Tensor& weight, const Tensor& indices);
+
 }  // namespace llm

@@ -23,6 +23,22 @@ private:
   bool has_bias_;
 };
 
+/** Lookup table: indices (N,) int64 -> embedded (N, embedding_dim) from weight (num_embeddings, embedding_dim). */
+class Embedding : public Module {
+public:
+  Embedding(int64_t num_embeddings, int64_t embedding_dim);
+
+  /** Forward: indices (N,) int64 -> output (N, embedding_dim) float32. */
+  Tensor operator()(const Tensor& indices);
+
+  int64_t num_embeddings() const { return num_embeddings_; }
+  int64_t embedding_dim() const { return embedding_dim_; }
+
+private:
+  int64_t num_embeddings_;
+  int64_t embedding_dim_;
+};
+
 /** Layer normalization over the last dimension. Normalize then scale + shift with gamma/beta. */
 class LayerNorm : public Module {
 public:

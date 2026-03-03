@@ -54,6 +54,7 @@ add_library(llm_core STATIC
   src/nn/module.cpp
   src/nn/linear.cpp
   src/nn/layernorm.cpp
+  src/nn/embedding.cpp
   src/utils/init.cpp
 )
 

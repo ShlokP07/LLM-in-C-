@@ -32,12 +32,14 @@ using llm::exp;
 using llm::max;
 using llm::matmul;
 using llm::transpose;
+using llm::gather;
 using llm::seed;
 using llm::uniform_;
 using llm::normal_;
 using llm::xavier_uniform_;
 using llm::zeros_;
 using llm::Linear;
+using llm::Embedding;
 using llm::LayerNorm;
 
 // Verify that version() returns some non-null, non-empty string.
@@ -515,6 +517,82 @@ static void test_layernorm_grad_check() {
   assert(std::fabs(numerical - analytical) < 0.02f);
 }
 
+// --- gather & Embedding tests ---
+
+static void test_gather_forward_shape_and_values() {
+  Tensor weight = Tensor::from_data(
+      {0.f, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f, 9.f, 10.f, 11.f},
+      {4, 3}, false);
+  Tensor indices({3}, DType::Int64, Device::cpu(), false);
+  indices.data_int64()[0] = 0;
+  indices.data_int64()[1] = 2;
+  indices.data_int64()[2] = 1;
+
+  Tensor out = gather(weight, indices);
+  assert(out.shape().size() == 2);
+  assert(out.shape()[0] == 3);
+  assert(out.shape()[1] == 3);
+  assert(std::fabs(out.data_float()[0] - 0.f) < 1e-5f);
+  assert(std::fabs(out.data_float()[1] - 1.f) < 1e-5f);
+  assert(std::fabs(out.data_float()[2] - 2.f) < 1e-5f);
+  assert(std::fabs(out.data_float()[3] - 6.f) < 1e-5f);
+  assert(std::fabs(out.data_float()[4] - 7.f) < 1e-5f);
+  assert(std::fabs(out.data_float()[5] - 8.f) < 1e-5f);
+  assert(std::fabs(out.data_float()[6] - 3.f) < 1e-5f);
+  assert(std::fabs(out.data_float()[7] - 4.f) < 1e-5f);
+  assert(std::fabs(out.data_float()[8] - 5.f) < 1e-5f);
+}
+
+static void test_gather_backward() {
+  Tensor weight = Tensor::from_data({1.f, 2.f, 3.f, 4.f, 5.f, 6.f}, {2, 3}, true);
+  Tensor indices({2}, DType::Int64, Device::cpu(), false);
+  indices.data_int64()[0] = 0;
+  indices.data_int64()[1] = 0;
+
+  Tensor y = gather(weight, indices);
+  Tensor loss = sum(y);
+  loss.backward();
+
+  assert(weight.grad() != nullptr);
+  assert((weight.grad()->shape() == std::vector<int64_t>{2, 3}));
+  const float* gw = weight.grad()->data_float();
+  for (int64_t j = 0; j < 3; ++j) {
+    assert(std::fabs(gw[0 * 3 + j] - 2.f) < 1e-5f);
+    assert(std::fabs(gw[1 * 3 + j] - 0.f) < 1e-5f);
+  }
+}
+
+static void test_embedding_forward_shape() {
+  seed(0);
+  Embedding emb(10, 4);
+  Tensor indices({3}, DType::Int64, Device::cpu(), false);
+  indices.data_int64()[0] = 1;
+  indices.data_int64()[1] = 5;
+  indices.data_int64()[2] = 0;
+
+  Tensor y = emb(indices);
+  assert(y.dim() == 2);
+  assert(y.shape()[0] == 3);
+  assert(y.shape()[1] == 4);
+}
+
+static void test_embedding_backward() {
+  seed(0);
+  Embedding emb(5, 3);
+  Tensor indices({2}, DType::Int64, Device::cpu(), false);
+  indices.data_int64()[0] = 0;
+  indices.data_int64()[1] = 1;
+
+  Tensor y = emb(indices);
+  Tensor loss = sum(y);
+  loss.backward();
+
+  auto params = emb.parameters();
+  assert(params.size() == 1);
+  assert(params[0]->grad() != nullptr);
+  assert((params[0]->grad()->shape() == std::vector<int64_t>{5, 3}));
+}
+
 int main() {
   std::cout << "Running LLM tests..." << std::endl;
 
@@ -550,6 +628,11 @@ int main() {
 
   test_layernorm_forward_shape();
   test_layernorm_grad_check();
+
+  test_gather_forward_shape_and_values();
+  test_gather_backward();
+  test_embedding_forward_shape();
+  test_embedding_backward();
 
   std::cout << "All Tensor and autograd tests passed." << std::endl;
   return 0;

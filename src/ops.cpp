@@ -285,6 +285,46 @@ private:
   std::shared_ptr<Tensor> a_, b_, a_val_, b_val_;
 };
 
+// Gather: gradient is scatter_add of grad_output into weight at indices.
+class GatherBackward : public AutogradNode {
+public:
+  GatherBackward(std::shared_ptr<Tensor> weight, std::shared_ptr<Tensor> indices,
+                 int64_t V, int64_t D, int64_t N)
+      : weight_(std::move(weight)),
+        indices_(std::move(indices)),
+        V_(V), D_(D), N_(N) {}
+
+  std::vector<std::shared_ptr<Tensor>> inputs() const override {
+    return {weight_};
+  }
+
+  void backward(const std::shared_ptr<Tensor>& grad_output) override {
+    if (!weight_ || !weight_->requires_grad()) return;
+    const float* go = grad_output->data_float();
+    const int64_t* idx = indices_->data_int64();
+
+    std::shared_ptr<Tensor> g_weight = std::make_shared<Tensor>(
+        std::vector<int64_t>{V_, D_}, DType::Float32, weight_->device(), false);
+    std::memset(g_weight->data_float(), 0,
+                static_cast<size_t>(V_ * D_) * sizeof(float));
+    float* gw = g_weight->data_float();
+
+    for (int64_t i = 0; i < N_; ++i) {
+      int64_t v = idx[i];
+      if (v < 0 || v >= V_)
+        continue;  // out-of-bounds index: skip (forward would have thrown)
+      for (int64_t j = 0; j < D_; ++j)
+        gw[v * D_ + j] += go[i * D_ + j];
+    }
+    weight_->accumulate_grad(*g_weight);
+  }
+
+private:
+  std::shared_ptr<Tensor> weight_;
+  std::shared_ptr<Tensor> indices_;
+  int64_t V_, D_, N_;
+};
+
 }  // namespace
 
 Tensor add(const Tensor& a, const Tensor& b) {
@@ -656,6 +696,43 @@ Tensor ones_like(const Tensor& t) {
   Tensor out(t.shape(), DType::Float32, t.device(), false);
   float* p = out.data_float();
   for (int64_t i = 0; i < out.numel(); ++i) p[i] = 1.0f;
+  return out;
+}
+
+Tensor gather(const Tensor& weight, const Tensor& indices) {
+  if (weight.dtype() != DType::Float32)
+    throw std::invalid_argument("gather: weight must be float32");
+  if (indices.dtype() != DType::Int64)
+    throw std::invalid_argument("gather: indices must be int64");
+  if (weight.dim() != 2)
+    throw std::invalid_argument("gather: weight must be 2D (V, D)");
+  if (indices.dim() != 1)
+    throw std::invalid_argument("gather: indices must be 1D (N)");
+
+  const int64_t V = weight.shape()[0];
+  const int64_t D = weight.shape()[1];
+  const int64_t N = indices.shape()[0];
+  const float* pw = weight.data_float();
+  const int64_t* pi = indices.data_int64();
+
+  Tensor out({N, D}, DType::Float32, weight.device(), false);
+  float* po = out.data_float();
+  for (int64_t i = 0; i < N; ++i) {
+    int64_t v = pi[i];
+    if (v < 0 || v >= V)
+      throw std::out_of_range("gather: index out of range");
+    for (int64_t j = 0; j < D; ++j)
+      po[i * D + j] = pw[v * D + j];
+  }
+
+  if (is_grad_enabled() && weight.requires_grad()) {
+    out.set_requires_grad(true);
+    auto node = std::make_shared<GatherBackward>(
+        std::make_shared<Tensor>(weight),
+        std::make_shared<Tensor>(indices),
+        V, D, N);
+    out.set_grad_fn(node);
+  }
   return out;
 }
 
