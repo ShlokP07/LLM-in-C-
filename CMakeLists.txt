@@ -57,6 +57,7 @@ add_library(llm_core STATIC
   src/nn/embedding.cpp
   src/nn/dropout.cpp
   src/nn/activation.cpp
+  src/nn/softmax.cpp
   src/utils/init.cpp
 )
 

@@ -43,6 +43,8 @@ using llm::Embedding;
 using llm::Dropout;
 using llm::GELU;
 using llm::gelu;
+using llm::softmax;
+using llm::log_softmax;
 using llm::LayerNorm;
 
 // Verify that version() returns some non-null, non-empty string.
@@ -680,6 +682,80 @@ static void test_gelu_grad_check() {
   assert(std::fabs(num - ana) < 1e-2f);
 }
 
+// --- Softmax / LogSoftmax tests ---
+
+static void test_softmax_row_sums_to_one() {
+  Tensor x({3, 4}, DType::Float32, Device::cpu(), false);
+  uniform_(x, -2.f, 2.f);
+  Tensor y = softmax(x);
+  for (int64_t i = 0; i < 3; ++i) {
+    float s = 0.f;
+    for (int64_t j = 0; j < 4; ++j) s += y.data_float()[i * 4 + j];
+    assert(std::fabs(s - 1.f) < 1e-4f);
+  }
+}
+
+static void test_log_softmax_exp_row_sums_to_one() {
+  Tensor x({2, 5}, DType::Float32, Device::cpu(), false);
+  uniform_(x, -2.f, 2.f);
+  Tensor y = log_softmax(x);
+  for (int64_t i = 0; i < 2; ++i) {
+    float s = 0.f;
+    for (int64_t j = 0; j < 5; ++j) s += std::exp(y.data_float()[i * 5 + j]);
+    assert(std::fabs(s - 1.f) < 1e-4f);
+  }
+}
+
+static void test_softmax_grad_check_one_element() {
+  Tensor x = Tensor::from_data({0.2f, -0.1f, 0.3f}, {1, 3}, true);
+  Tensor w = Tensor::from_data({1.0f, -2.0f, 0.5f}, {1, 3}, false);
+  Tensor y = softmax(x);
+  Tensor loss = sum(mul(y, w));
+  loss.backward();
+  assert(x.grad() != nullptr);
+
+  const float eps = 1e-4f;
+  float lp = 0.f, lm = 0.f;
+  {
+    llm::NoGradGuard guard;
+    Tensor xp = Tensor::from_data({0.2f + eps, -0.1f, 0.3f}, {1, 3}, false);
+    lp = sum(mul(softmax(xp), w)).data_float()[0];
+  }
+  {
+    llm::NoGradGuard guard;
+    Tensor xm = Tensor::from_data({0.2f - eps, -0.1f, 0.3f}, {1, 3}, false);
+    lm = sum(mul(softmax(xm), w)).data_float()[0];
+  }
+  float num = (lp - lm) / (2.f * eps);
+  float ana = x.grad()->data_float()[0];
+  assert(std::fabs(num - ana) < 1e-2f);
+}
+
+static void test_log_softmax_grad_check_one_element() {
+  Tensor x = Tensor::from_data({0.2f, -0.1f, 0.3f}, {1, 3}, true);
+  Tensor w = Tensor::from_data({-1.0f, 1.5f, 0.25f}, {1, 3}, false);
+  Tensor y = log_softmax(x);
+  Tensor loss = sum(mul(y, w));
+  loss.backward();
+  assert(x.grad() != nullptr);
+
+  const float eps = 1e-4f;
+  float lp = 0.f, lm = 0.f;
+  {
+    llm::NoGradGuard guard;
+    Tensor xp = Tensor::from_data({0.2f + eps, -0.1f, 0.3f}, {1, 3}, false);
+    lp = sum(mul(log_softmax(xp), w)).data_float()[0];
+  }
+  {
+    llm::NoGradGuard guard;
+    Tensor xm = Tensor::from_data({0.2f - eps, -0.1f, 0.3f}, {1, 3}, false);
+    lm = sum(mul(log_softmax(xm), w)).data_float()[0];
+  }
+  float num = (lp - lm) / (2.f * eps);
+  float ana = x.grad()->data_float()[0];
+  assert(std::fabs(num - ana) < 1e-2f);
+}
+
 int main() {
   std::cout << "Running LLM tests..." << std::endl;
 
@@ -727,6 +803,11 @@ int main() {
 
   test_gelu_forward_shape();
   test_gelu_grad_check();
+
+  test_softmax_row_sums_to_one();
+  test_log_softmax_exp_row_sums_to_one();
+  test_softmax_grad_check_one_element();
+  test_log_softmax_grad_check_one_element();
 
   std::cout << "All Tensor and autograd tests passed." << std::endl;
   return 0;

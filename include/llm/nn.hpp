@@ -61,6 +61,24 @@ public:
 /** GELU activation (tanh approximation). */
 Tensor gelu(const Tensor& x);
 
+/** Softmax over the last dimension. Currently supports 2D input (N, D), softmax on D. */
+Tensor softmax(const Tensor& x);
+
+/** LogSoftmax over the last dimension. Currently supports 2D input (N, D), log-softmax on D. */
+Tensor log_softmax(const Tensor& x);
+
+/** Softmax module over last dimension (2D only for now). */
+class Softmax : public Module {
+public:
+  Tensor operator()(const Tensor& x);
+};
+
+/** LogSoftmax module over last dimension (2D only for now). */
+class LogSoftmax : public Module {
+public:
+  Tensor operator()(const Tensor& x);
+};
+
 /** Layer normalization over the last dimension. Normalize then scale + shift with gamma/beta. */
 class LayerNorm : public Module {
 public:
