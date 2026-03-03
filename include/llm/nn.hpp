@@ -52,6 +52,15 @@ private:
   float p_;
 };
 
+/** GELU activation (tanh approximation). */
+class GELU : public Module {
+public:
+  Tensor operator()(const Tensor& x);
+};
+
+/** GELU activation (tanh approximation). */
+Tensor gelu(const Tensor& x);
+
 /** Layer normalization over the last dimension. Normalize then scale + shift with gamma/beta. */
 class LayerNorm : public Module {
 public:

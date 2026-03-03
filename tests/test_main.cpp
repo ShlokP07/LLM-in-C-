@@ -41,6 +41,8 @@ using llm::zeros_;
 using llm::Linear;
 using llm::Embedding;
 using llm::Dropout;
+using llm::GELU;
+using llm::gelu;
 using llm::LayerNorm;
 
 // Verify that version() returns some non-null, non-empty string.
@@ -644,6 +646,40 @@ static void test_dropout_backward_matches_mask_scale() {
     assert(std::fabs(x.grad()->data_float()[i] - y.data_float()[i]) < 1e-6f);
 }
 
+// --- GELU tests ---
+
+static void test_gelu_forward_shape() {
+  GELU g;
+  Tensor x({2, 3}, DType::Float32, Device::cpu(), false);
+  uniform_(x, -1.f, 1.f);
+  Tensor y = g(x);
+  assert(y.shape() == x.shape());
+}
+
+static void test_gelu_grad_check() {
+  Tensor x = Tensor::from_data({-1.f, 0.f, 1.f}, {3}, true);
+  Tensor y = gelu(x);
+  Tensor loss = sum(y);
+  loss.backward();
+  assert(x.grad() != nullptr);
+
+  const float eps = 1e-4f;
+  float lp = 0.f, lm = 0.f;
+  {
+    llm::NoGradGuard guard;
+    Tensor xp = Tensor::from_data({-1.f + eps, 0.f, 1.f}, {3}, false);
+    lp = sum(gelu(xp)).data_float()[0];
+  }
+  {
+    llm::NoGradGuard guard;
+    Tensor xm = Tensor::from_data({-1.f - eps, 0.f, 1.f}, {3}, false);
+    lm = sum(gelu(xm)).data_float()[0];
+  }
+  float num = (lp - lm) / (2.f * eps);
+  float ana = x.grad()->data_float()[0];
+  assert(std::fabs(num - ana) < 1e-2f);
+}
+
 int main() {
   std::cout << "Running LLM tests..." << std::endl;
 
@@ -688,6 +724,9 @@ int main() {
   test_dropout_eval_identity();
   test_dropout_train_deterministic_with_seed();
   test_dropout_backward_matches_mask_scale();
+
+  test_gelu_forward_shape();
+  test_gelu_grad_check();
 
   std::cout << "All Tensor and autograd tests passed." << std::endl;
   return 0;
