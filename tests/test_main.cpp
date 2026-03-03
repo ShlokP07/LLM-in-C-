@@ -7,6 +7,7 @@
 #include <llm/autograd.hpp>
 #include <llm/module.hpp>
 #include <llm/init.hpp>
+#include <llm/nn.hpp>
 
 #include <cassert>
 #include <cmath>
@@ -36,6 +37,7 @@ using llm::uniform_;
 using llm::normal_;
 using llm::xavier_uniform_;
 using llm::zeros_;
+using llm::Linear;
 
 // Verify that version() returns some non-null, non-empty string.
 static void test_version() {
@@ -419,6 +421,49 @@ static void test_xavier_uniform_range() {
   }
 }
 
+// --- Linear layer tests ---
+
+static void test_linear_forward_shape() {
+  Linear linear(3, 4, /*bias=*/true);
+  Tensor x({2, 3}, DType::Float32, Device::cpu(), false);
+  uniform_(x, 0.f, 1.f);
+
+  Tensor y = linear(x);
+  assert(y.dim() == 2);
+  assert(y.shape()[0] == 2);
+  assert(y.shape()[1] == 4);
+}
+
+static void test_linear_no_bias_forward_shape() {
+  Linear linear(5, 2, /*bias=*/false);
+  Tensor x({1, 5}, DType::Float32, Device::cpu(), false);
+  zeros_(x);
+  Tensor y = linear(x);
+  assert(y.shape().size() == 2);
+  assert(y.shape()[0] == 1);
+  assert(y.shape()[1] == 2);
+}
+
+static void test_linear_backward_weight_and_bias() {
+  seed(0);
+  Linear linear(2, 3, /*bias=*/true);
+  Tensor x = Tensor::from_data({1.f, 0.f, 0.f, 1.f}, {2, 2}, true);  // (2, 2)
+  Tensor y = linear(x);
+  Tensor loss = sum(y);
+  loss.backward();
+
+  auto params = linear.parameters();
+  assert(params.size() == 2);  // weight, bias
+  bool has_weight_grad = false, has_bias_grad = false;
+  for (Parameter* p : params) {
+    assert(p->grad() != nullptr);
+    const auto& sh = p->grad()->shape();
+    if (sh.size() == 2 && sh[0] == 3 && sh[1] == 2) has_weight_grad = true;
+    if (sh.size() == 1 && sh[0] == 3) has_bias_grad = true;
+  }
+  assert(has_weight_grad && has_bias_grad);
+}
+
 int main() {
   std::cout << "Running LLM tests..." << std::endl;
 
@@ -447,6 +492,10 @@ int main() {
   test_zeros_float32();
   test_zeros_int64();
   test_xavier_uniform_range();
+
+  test_linear_forward_shape();
+  test_linear_no_bias_forward_shape();
+  test_linear_backward_weight_and_bias();
 
   std::cout << "All Tensor and autograd tests passed." << std::endl;
   return 0;

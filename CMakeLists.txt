@@ -52,6 +52,7 @@ add_library(llm_core STATIC
   src/autograd.cpp
   src/ops.cpp
   src/nn/module.cpp
+  src/nn/linear.cpp
   src/utils/init.cpp
 )
 
