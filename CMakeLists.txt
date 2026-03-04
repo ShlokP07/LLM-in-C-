@@ -61,6 +61,7 @@ add_library(llm_core STATIC
   src/nn/loss.cpp
   src/optim/sgd.cpp
   src/optim/adamw.cpp
+  src/optim/clip_grad.cpp
   src/utils/init.cpp
 )
 

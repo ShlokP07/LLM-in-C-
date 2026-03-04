@@ -51,6 +51,7 @@ using llm::CrossEntropyLoss;
 using llm::LayerNorm;
 using llm::SGD;
 using llm::AdamW;
+using llm::clip_grad_norm_;
 
 // Verify that version() returns some non-null, non-empty string.
 static void test_version() {
@@ -862,6 +863,24 @@ static void test_adamw_quadratic_descent() {
   assert(std::fabs(w_val - 3.f) < 1e-2f);
 }
 
+static void test_clip_grad_norm() {
+  // Single param with grad [3, 4] -> L2 norm = 5. Clip to 2 -> scale by 2/5.
+  Parameter p = Parameter::zeros({2});
+  p.set_requires_grad(true);
+  std::shared_ptr<Tensor> g = std::make_shared<Tensor>(Tensor::from_data({3.f, 4.f}, {2}, false));
+  p.set_grad(g);
+
+  std::vector<Parameter*> params = {&p};
+  float norm_before = clip_grad_norm_(params, 2.f);
+  assert(std::fabs(norm_before - 5.f) < 1e-5f);
+
+  const float* gw = p.grad()->data_float();
+  float norm_after = std::sqrt(gw[0] * gw[0] + gw[1] * gw[1]);
+  assert(std::fabs(norm_after - 2.f) < 1e-5f);
+  assert(std::fabs(gw[0] - 1.2f) < 1e-5f);
+  assert(std::fabs(gw[1] - 1.6f) < 1e-5f);
+}
+
 int main() {
   std::cout << "Running LLM tests..." << std::endl;
 
@@ -921,6 +940,7 @@ int main() {
 
   test_sgd_quadratic_descent();
   test_adamw_quadratic_descent();
+  test_clip_grad_norm();
 
   std::cout << "All Tensor and autograd tests passed." << std::endl;
   return 0;

@@ -71,5 +71,16 @@ private:
   std::vector<std::vector<float>> state_v_;
 };
 
+/**
+ * Clips the gradient norm of the parameters in place (L2 norm over all elements).
+ * If the total norm exceeds max_norm, scales all gradients by (max_norm / total_norm).
+ * Only considers float32 parameters that have a non-null grad.
+ *
+ * @param params  Parameters whose grads are clipped (in place).
+ * @param max_norm  Maximum allowed L2 norm of the concatenated gradients.
+ * @return Total gradient norm before clipping (0 if no grads).
+ */
+float clip_grad_norm_(std::vector<Parameter*>& params, float max_norm);
+
 }  // namespace llm
 
