@@ -419,6 +419,111 @@ private:
   int64_t V_, D_, N_;
 };
 
+// Slice: gradient is zero everywhere except the sliced region, where it is grad_output.
+class SliceBackward : public AutogradNode {
+public:
+  SliceBackward(std::shared_ptr<Tensor> a,
+                int64_t dim,
+                int64_t start,
+                int64_t end)
+      : a_(std::move(a)), dim_(dim), start_(start), end_(end) {}
+
+  std::vector<std::shared_ptr<Tensor>> inputs() const override {
+    return {a_};
+  }
+
+  void backward(const std::shared_ptr<Tensor>& grad_output) override {
+    if (!a_ || !a_->requires_grad()) return;
+    if (a_->dtype() != DType::Float32)
+      throw std::runtime_error("slice backward: only float32 supported");
+
+    const auto& ash = a_->shape();
+    const int64_t rank = static_cast<int64_t>(ash.size());
+    if (rank != 2 && rank != 3)
+      throw std::runtime_error("slice backward: only 2D/3D tensors supported");
+
+    Tensor grad_a(ash, DType::Float32, a_->device(), false);
+    float* ga = grad_a.data_float();
+    std::memset(ga, 0, static_cast<size_t>(grad_a.numel()) * sizeof(float));
+
+    const float* go = grad_output->data_float();
+    const auto& gsh = grad_output->shape();
+
+    if (rank == 2) {
+      const int64_t A = ash[0];
+      const int64_t B = ash[1];
+      if (dim_ == 0) {
+        const int64_t M = gsh[0];
+        const int64_t N = gsh[1];
+        for (int64_t i = 0; i < M; ++i) {
+          const int64_t ai = start_ + i;
+          for (int64_t j = 0; j < N; ++j) {
+            ga[ai * B + j] += go[i * N + j];
+          }
+        }
+      } else if (dim_ == 1) {
+        const int64_t M = gsh[0];
+        const int64_t N = gsh[1];
+        for (int64_t i = 0; i < M; ++i) {
+          for (int64_t j = 0; j < N; ++j) {
+            const int64_t aj = start_ + j;
+            ga[i * B + aj] += go[i * N + j];
+          }
+        }
+      }
+    } else { // rank == 3
+      const int64_t A = ash[0];
+      const int64_t B = ash[1];
+      const int64_t C = ash[2];
+      if (dim_ == 0) {
+        const int64_t M = gsh[0];
+        const int64_t N = gsh[1];
+        const int64_t P = gsh[2];
+        for (int64_t i = 0; i < M; ++i) {
+          const int64_t ai = start_ + i;
+          for (int64_t j = 0; j < N; ++j) {
+            for (int64_t k = 0; k < P; ++k) {
+              ga[(ai * B + j) * C + k] += go[(i * N + j) * P + k];
+            }
+          }
+        }
+      } else if (dim_ == 1) {
+        const int64_t M = gsh[0];
+        const int64_t N = gsh[1];
+        const int64_t P = gsh[2];
+        for (int64_t i = 0; i < M; ++i) {
+          for (int64_t j = 0; j < N; ++j) {
+            const int64_t bj = start_ + j;
+            for (int64_t k = 0; k < P; ++k) {
+              ga[(i * B + bj) * C + k] += go[(i * N + j) * P + k];
+            }
+          }
+        }
+      } else if (dim_ == 2) {
+        const int64_t M = gsh[0];
+        const int64_t N = gsh[1];
+        const int64_t P = gsh[2];
+        for (int64_t i = 0; i < M; ++i) {
+          for (int64_t j = 0; j < N; ++j) {
+            for (int64_t k = 0; k < P; ++k) {
+              const int64_t ck = start_ + k;
+              ga[(i * B + j) * C + ck] += go[(i * N + j) * P + k];
+            }
+          }
+        }
+      }
+    }
+
+    a_->accumulate_grad(grad_a);
+  }
+
+private:
+  std::shared_ptr<Tensor> a_;
+  int64_t dim_;
+  int64_t start_;
+  int64_t end_;
+};
+
 }  // namespace
 
 Tensor add(const Tensor& a, const Tensor& b) {
@@ -847,6 +952,132 @@ Tensor ones_like(const Tensor& t) {
   float* p = out.data_float();
   for (int64_t i = 0; i < out.numel(); ++i) p[i] = 1.0f;
   return out;
+}
+
+Tensor view_as_heads(const Tensor& x, int64_t num_heads) {
+  expect_float32(x, "view_as_heads");
+  if (x.dim() != 2)
+    throw std::invalid_argument("view_as_heads: expected 2D tensor (T, dim)");
+  if (num_heads <= 0)
+    throw std::invalid_argument("view_as_heads: num_heads must be positive");
+  const int64_t T = x.shape()[0];
+  const int64_t dim = x.shape()[1];
+  if (dim % num_heads != 0)
+    throw std::invalid_argument("view_as_heads: dim must be divisible by num_heads");
+  const int64_t head_dim = dim / num_heads;
+  return x.reshape({T, num_heads, head_dim});
+}
+
+Tensor slice(const Tensor& x, int64_t dim, int64_t start, int64_t end) {
+  expect_float32(x, "slice");
+  const auto& sh = x.shape();
+  const int64_t rank = static_cast<int64_t>(sh.size());
+  if (rank != 2 && rank != 3)
+    throw std::invalid_argument("slice: only 2D or 3D tensors supported for now");
+  if (dim < 0 || dim >= rank)
+    throw std::invalid_argument("slice: dim out of range");
+
+  const int64_t size_dim = sh[dim];
+  if (start < 0 || end > size_dim || start >= end)
+    throw std::invalid_argument("slice: invalid start/end");
+
+  if (rank == 2) {
+    const int64_t A = sh[0];
+    const int64_t B = sh[1];
+    if (dim == 0) {
+      const int64_t M = end - start;
+      Tensor out({M, B}, DType::Float32, x.device(), false);
+      const float* px = x.data_float();
+      float* po = out.data_float();
+      for (int64_t i = 0; i < M; ++i) {
+        int64_t src_i = start + i;
+        std::memcpy(po + i * B, px + src_i * B, static_cast<size_t>(B) * sizeof(float));
+      }
+      if (is_grad_enabled() && x.requires_grad()) {
+        out.set_requires_grad(true);
+        auto node = std::make_shared<SliceBackward>(std::make_shared<Tensor>(x), dim, start, end);
+        out.set_grad_fn(node);
+      }
+      return out;
+    } else { // dim == 1
+      const int64_t N = end - start;
+      Tensor out({A, N}, DType::Float32, x.device(), false);
+      const float* px = x.data_float();
+      float* po = out.data_float();
+      for (int64_t i = 0; i < A; ++i) {
+        for (int64_t j = 0; j < N; ++j) {
+          int64_t src_j = start + j;
+          po[i * N + j] = px[i * B + src_j];
+        }
+      }
+      if (is_grad_enabled() && x.requires_grad()) {
+        out.set_requires_grad(true);
+        auto node = std::make_shared<SliceBackward>(std::make_shared<Tensor>(x), dim, start, end);
+        out.set_grad_fn(node);
+      }
+      return out;
+    }
+  } else { // rank == 3
+    const int64_t A = sh[0];
+    const int64_t B = sh[1];
+    const int64_t C = sh[2];
+    if (dim == 0) {
+      const int64_t M = end - start;
+      Tensor out({M, B, C}, DType::Float32, x.device(), false);
+      const float* px = x.data_float();
+      float* po = out.data_float();
+      for (int64_t i = 0; i < M; ++i) {
+        int64_t src_i = start + i;
+        std::memcpy(po + i * B * C,
+                    px + src_i * B * C,
+                    static_cast<size_t>(B * C) * sizeof(float));
+      }
+      if (is_grad_enabled() && x.requires_grad()) {
+        out.set_requires_grad(true);
+        auto node = std::make_shared<SliceBackward>(std::make_shared<Tensor>(x), dim, start, end);
+        out.set_grad_fn(node);
+      }
+      return out;
+    } else if (dim == 1) {
+      const int64_t N = end - start;
+      Tensor out({A, N, C}, DType::Float32, x.device(), false);
+      const float* px = x.data_float();
+      float* po = out.data_float();
+      for (int64_t i = 0; i < A; ++i) {
+        for (int64_t j = 0; j < N; ++j) {
+          int64_t src_j = start + j;
+          for (int64_t k = 0; k < C; ++k) {
+            po[(i * N + j) * C + k] = px[(i * B + src_j) * C + k];
+          }
+        }
+      }
+      if (is_grad_enabled() && x.requires_grad()) {
+        out.set_requires_grad(true);
+        auto node = std::make_shared<SliceBackward>(std::make_shared<Tensor>(x), dim, start, end);
+        out.set_grad_fn(node);
+      }
+      return out;
+    } else { // dim == 2
+      const int64_t P = end - start;
+      Tensor out({A, B, P}, DType::Float32, x.device(), false);
+      const float* px = x.data_float();
+      float* po = out.data_float();
+      for (int64_t i = 0; i < A; ++i) {
+        for (int64_t j = 0; j < B; ++j) {
+          for (int64_t k = 0; k < P; ++k) {
+            int64_t src_k = start + k;
+            po[(i * B + j) * P + k] = px[(i * B + j) * C + src_k];
+          }
+        }
+      }
+      if (is_grad_enabled() && x.requires_grad()) {
+        out.set_requires_grad(true);
+        auto node = std::make_shared<SliceBackward>(std::make_shared<Tensor>(x), dim, start, end);
+        out.set_grad_fn(node);
+      }
+      return out;
+    }
+  }
 }
 
 Tensor gather(const Tensor& weight, const Tensor& indices) {

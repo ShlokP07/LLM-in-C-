@@ -1270,6 +1270,40 @@ static void test_step_lr_schedule() {
   assert(std::fabs(sched.get_lr(20) - 1e-5f) < 1e-9f);
 }
 
+// --- 3D view/slice tests ---
+
+static void test_view_as_heads_shapes() {
+  // x: (T, dim) with dim divisible by num_heads.
+  Tensor x = Tensor::from_data({1.f, 2.f, 3.f, 4.f, 5.f, 6.f}, {2, 3}, false);  // T=2, dim=3
+  Tensor v = view_as_heads(x, 3);  // (2, 3, 1)
+  assert(v.dim() == 3);
+  assert(v.shape()[0] == 2);
+  assert(v.shape()[1] == 3);
+  assert(v.shape()[2] == 1);
+}
+
+static void test_slice_forward_and_backward_2d() {
+  Tensor x = Tensor::from_data({1.f, 2.f, 3.f, 4.f, 5.f, 6.f}, {2, 3}, true);
+  // Slice second row only.
+  Tensor s = slice(x, 0, 1, 2);  // shape (1,3) -> values {4,5,6}
+  assert(s.numel() == 3);
+  assert(std::fabs(s.data_float()[0] - 4.f) < 1e-5f);
+  assert(std::fabs(s.data_float()[1] - 5.f) < 1e-5f);
+  assert(std::fabs(s.data_float()[2] - 6.f) < 1e-5f);
+
+  Tensor loss = sum(s);
+  loss.backward();
+  assert(x.grad() != nullptr);
+  const float* gx = x.grad()->data_float();
+  // Only second row should have gradient 1s; first row zeros.
+  assert(std::fabs(gx[0] - 0.f) < 1e-5f);
+  assert(std::fabs(gx[1] - 0.f) < 1e-5f);
+  assert(std::fabs(gx[2] - 0.f) < 1e-5f);
+  assert(std::fabs(gx[3] - 1.f) < 1e-5f);
+  assert(std::fabs(gx[4] - 1.f) < 1e-5f);
+  assert(std::fabs(gx[5] - 1.f) < 1e-5f);
+}
+
 // --- Module state_dict (documents serialization API for readers) ---
 
 // state_dict() returns a map of dotted names -> tensors (e.g. "weight", "bias" for Linear).
@@ -1418,6 +1452,8 @@ static void run_nn_layer_tests() {
   test_attention_causal_mask();
   test_attention_backward();
   test_attention_module_wrapper();
+  test_view_as_heads_shapes();
+  test_slice_forward_and_backward_2d();
 }
 
 static void run_data_and_checkpoint_tests() {

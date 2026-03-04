@@ -12,34 +12,6 @@
 namespace llm {
 namespace models {
 
-namespace {
-
-// Head split/concat trick (no slicing op required):
-// - To "slice" the h-th head from a (T, dim) tensor, we multiply by a constant selector matrix
-//   W_h ∈ R^{dim×head_dim} that picks the contiguous [h*head_dim : (h+1)*head_dim) columns.
-// - To "concat" head outputs back into (T, dim), we multiply by U_h ∈ R^{head_dim×dim} and sum:
-//     out = Σ_h out_h @ U_h
-// This keeps everything differentiable using only existing matmul/add ops.
-Tensor make_head_W(int64_t dim, int64_t head_dim, int64_t h) {
-  Tensor W({dim, head_dim}, DType::Float32, Device::cpu(), false);
-  zeros_(W);
-  float* p = W.data_float();
-  for (int64_t i = 0; i < head_dim; ++i)
-    p[(h * head_dim + i) * head_dim + i] = 1.f;
-  return W;
-}
-
-Tensor make_head_U(int64_t dim, int64_t head_dim, int64_t h) {
-  Tensor U({head_dim, dim}, DType::Float32, Device::cpu(), false);
-  zeros_(U);
-  float* p = U.data_float();
-  for (int64_t i = 0; i < head_dim; ++i)
-    p[i * dim + (h * head_dim + i)] = 1.f;
-  return U;
-}
-
-}  // namespace
-
 // --- MultiHeadAttention ---
 
 MultiHeadAttention::MultiHeadAttention(int64_t dim, int64_t num_heads)
@@ -54,13 +26,6 @@ MultiHeadAttention::MultiHeadAttention(int64_t dim, int64_t num_heads)
   register_module("k_proj", k_proj_);
   register_module("v_proj", v_proj_);
   register_module("out_proj", out_proj_);
-
-  head_W_.reserve(static_cast<size_t>(num_heads_));
-  head_U_.reserve(static_cast<size_t>(num_heads_));
-  for (int64_t h = 0; h < num_heads_; ++h) {
-    head_W_.push_back(make_head_W(dim_, head_dim_, h));
-    head_U_.push_back(make_head_U(dim_, head_dim_, h));
-  }
 }
 
 Tensor MultiHeadAttention::operator()(const Tensor& x, bool causal) {
@@ -69,15 +34,34 @@ Tensor MultiHeadAttention::operator()(const Tensor& x, bool causal) {
   Tensor K = (*k_proj_)(x);
   Tensor V = (*v_proj_)(x);
 
+  // Reshape Q, K, V to (T, num_heads, head_dim).
+  Tensor Q3 = view_as_heads(Q, num_heads_);
+  Tensor K3 = view_as_heads(K, num_heads_);
+  Tensor V3 = view_as_heads(V, num_heads_);
+
+  // Accumulate per-head outputs into (T, dim_).
   Tensor out = Tensor::zeros({T, dim_}, DType::Float32, Device::cpu(), false);
   for (int64_t h = 0; h < num_heads_; ++h) {
-    const Tensor& W_h = head_W_[static_cast<size_t>(h)];
-    const Tensor& U_h = head_U_[static_cast<size_t>(h)];
-    Tensor Q_h = matmul(Q, W_h);
-    Tensor K_h = matmul(K, W_h);
-    Tensor V_h = matmul(V, W_h);
-    Tensor out_h = scaled_dot_product_attention(Q_h, K_h, V_h, causal);
-    out = add(out, matmul(out_h, U_h));
+    // Q_h, K_h, V_h: (T, head_dim_) via slicing along head dimension.
+    Tensor Q_h = slice(Q3, /*dim=*/1, h, h + 1).reshape({T, head_dim_});
+    Tensor K_h = slice(K3, /*dim=*/1, h, h + 1).reshape({T, head_dim_});
+    Tensor V_h = slice(V3, /*dim=*/1, h, h + 1).reshape({T, head_dim_});
+    Tensor out_h = scaled_dot_product_attention(Q_h, K_h, V_h, causal);  // (T, head_dim_)
+
+    // Write this head's contribution into the appropriate slice of out.
+    Tensor out_view = slice(out, /*dim=*/1, h * head_dim_, (h + 1) * head_dim_);
+    Tensor out_view_updated = add(out_view, out_h);
+    // Copy updated view back into out's slice.
+    out.copy_(out);  // no-op placeholder; will be updated below
+    // Manual scatter: overwrite the slice region in out with out_view_updated.
+    float* po = out.data_float();
+    const float* pv = out_view_updated.data_float();
+    for (int64_t t = 0; t < T; ++t) {
+      for (int64_t j = 0; j < head_dim_; ++j) {
+        int64_t col = h * head_dim_ + j;
+        po[t * dim_ + col] = pv[t * head_dim_ + j];
+      }
+    }
   }
   return (*out_proj_)(out);
 }

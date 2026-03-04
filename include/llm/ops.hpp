@@ -44,6 +44,20 @@ Tensor transpose(const Tensor& a);
 Tensor ones_like(const Tensor& t);
 
 /**
+ * View a 2D tensor (T, dim) as 3D (T, num_heads, head_dim) where dim = num_heads * head_dim.
+ * This is a reshape-based view (shares storage, autograd-aware).
+ */
+Tensor view_as_heads(const Tensor& x, int64_t num_heads);
+
+/**
+ * Slice a tensor along a single dimension, returning a copy-based slice.
+ * Currently supports 2D and 3D float32 tensors; dims outside [0, rank) will throw.
+ *
+ * Example: slice(x, 1, h, h+1) on shape (T, H, Dh) returns (T, 1, Dh).
+ */
+Tensor slice(const Tensor& x, int64_t dim, int64_t start, int64_t end);
+
+/**
  * Gather rows from a 2D tensor by int64 indices.
  * weight: (V, D) float32, indices: (N,) int64 -> output (N, D).
  * output[i, j] = weight[indices[i], j]. Indices must be in [0, V).
