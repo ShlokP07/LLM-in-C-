@@ -240,6 +240,95 @@ private:
   std::shared_ptr<Tensor> a_;
 };
 
+// Sum over a dimension (2D only): grad is broadcast along reduced dim.
+class SumDimBackward : public AutogradNode {
+public:
+  SumDimBackward(std::shared_ptr<Tensor> a, int64_t dim, bool keepdim, int64_t M, int64_t N)
+      : a_(std::move(a)), dim_(dim), keepdim_(keepdim), M_(M), N_(N) {}
+
+  std::vector<std::shared_ptr<Tensor>> inputs() const override {
+    return {a_};
+  }
+
+  void backward(const std::shared_ptr<Tensor>& grad_output) override {
+    if (!a_ || !a_->requires_grad()) return;
+    const float* go = grad_output->data_float();
+
+    std::shared_ptr<Tensor> grad_a = std::make_shared<Tensor>(
+        std::vector<int64_t>{M_, N_}, DType::Float32, a_->device(), false);
+    float* ga = grad_a->data_float();
+
+    if (dim_ == 0) {
+      // out is (N) or (1,N): grad_a[i,j] = go[j]
+      for (int64_t i = 0; i < M_; ++i) {
+        for (int64_t j = 0; j < N_; ++j) {
+          ga[i * N_ + j] = go[j];
+        }
+      }
+    } else {
+      // dim_ == 1: out is (M) or (M,1): grad_a[i,j] = go[i]
+      for (int64_t i = 0; i < M_; ++i) {
+        float g = go[i];
+        for (int64_t j = 0; j < N_; ++j) {
+          ga[i * N_ + j] = g;
+        }
+      }
+    }
+    a_->accumulate_grad(*grad_a);
+  }
+
+private:
+  std::shared_ptr<Tensor> a_;
+  int64_t dim_;
+  bool keepdim_;
+  int64_t M_, N_;
+};
+
+// Mean over a dimension (2D only): grad is broadcast and scaled by 1/denom.
+class MeanDimBackward : public AutogradNode {
+public:
+  MeanDimBackward(std::shared_ptr<Tensor> a, int64_t dim, bool keepdim, int64_t M, int64_t N)
+      : a_(std::move(a)), dim_(dim), keepdim_(keepdim), M_(M), N_(N) {}
+
+  std::vector<std::shared_ptr<Tensor>> inputs() const override {
+    return {a_};
+  }
+
+  void backward(const std::shared_ptr<Tensor>& grad_output) override {
+    if (!a_ || !a_->requires_grad()) return;
+    const float* go = grad_output->data_float();
+
+    const float denom = static_cast<float>((dim_ == 0) ? M_ : N_);
+    const float inv = 1.0f / denom;
+
+    std::shared_ptr<Tensor> grad_a = std::make_shared<Tensor>(
+        std::vector<int64_t>{M_, N_}, DType::Float32, a_->device(), false);
+    float* ga = grad_a->data_float();
+
+    if (dim_ == 0) {
+      for (int64_t i = 0; i < M_; ++i) {
+        for (int64_t j = 0; j < N_; ++j) {
+          ga[i * N_ + j] = go[j] * inv;
+        }
+      }
+    } else {
+      for (int64_t i = 0; i < M_; ++i) {
+        float g = go[i] * inv;
+        for (int64_t j = 0; j < N_; ++j) {
+          ga[i * N_ + j] = g;
+        }
+      }
+    }
+    a_->accumulate_grad(*grad_a);
+  }
+
+private:
+  std::shared_ptr<Tensor> a_;
+  int64_t dim_;
+  bool keepdim_;
+  int64_t M_, N_;
+};
+
 // Transpose: gradient of transpose is transpose of gradient.
 class TransposeBackward : public AutogradNode {
 public:
@@ -531,6 +620,11 @@ Tensor sum(const Tensor& a, int64_t dim, bool keepdim) {
       }
       po[keepdim ? j : j] = acc;
     }
+    if (is_grad_enabled() && a.requires_grad()) {
+      out.set_requires_grad(true);
+      auto node = std::make_shared<SumDimBackward>(std::make_shared<Tensor>(a), dim, keepdim, M, N);
+      out.set_grad_fn(node);
+    }
     return out;
   } else {
     // dim == 1: reduce columns → length-M vector.
@@ -543,6 +637,11 @@ Tensor sum(const Tensor& a, int64_t dim, bool keepdim) {
         acc += pa[i * N + j];
       }
       po[keepdim ? i : i] = acc;
+    }
+    if (is_grad_enabled() && a.requires_grad()) {
+      out.set_requires_grad(true);
+      auto node = std::make_shared<SumDimBackward>(std::make_shared<Tensor>(a), dim, keepdim, M, N);
+      out.set_grad_fn(node);
     }
     return out;
   }
@@ -557,14 +656,42 @@ Tensor mean(const Tensor& a, int64_t dim, bool keepdim) {
 
   int64_t M = a.shape()[0];
   int64_t N = a.shape()[1];
-  Tensor s = sum(a, dim, keepdim);
-  float* ps = s.data_float();
-  int64_t len = (dim == 0) ? N : M;
-  float denom = static_cast<float>((dim == 0) ? M : N);
-  for (int64_t i = 0; i < len; ++i) {
-    ps[i] /= denom;
+  const float* pa = a.data_float();
+
+  std::vector<int64_t> out_shape;
+  if (dim == 0) {
+    out_shape = keepdim ? std::vector<int64_t>{1, N} : std::vector<int64_t>{N};
+    Tensor out(out_shape, DType::Float32, a.device(), false);
+    float* po = out.data_float();
+    const float denom = static_cast<float>(M);
+    for (int64_t j = 0; j < N; ++j) {
+      float acc = 0.f;
+      for (int64_t i = 0; i < M; ++i) acc += pa[i * N + j];
+      po[j] = acc / denom;
+    }
+    if (is_grad_enabled() && a.requires_grad()) {
+      out.set_requires_grad(true);
+      auto node = std::make_shared<MeanDimBackward>(std::make_shared<Tensor>(a), dim, keepdim, M, N);
+      out.set_grad_fn(node);
+    }
+    return out;
+  } else {
+    out_shape = keepdim ? std::vector<int64_t>{M, 1} : std::vector<int64_t>{M};
+    Tensor out(out_shape, DType::Float32, a.device(), false);
+    float* po = out.data_float();
+    const float denom = static_cast<float>(N);
+    for (int64_t i = 0; i < M; ++i) {
+      float acc = 0.f;
+      for (int64_t j = 0; j < N; ++j) acc += pa[i * N + j];
+      po[i] = acc / denom;
+    }
+    if (is_grad_enabled() && a.requires_grad()) {
+      out.set_requires_grad(true);
+      auto node = std::make_shared<MeanDimBackward>(std::make_shared<Tensor>(a), dim, keepdim, M, N);
+      out.set_grad_fn(node);
+    }
+    return out;
   }
-  return s;
 }
 
 Tensor exp(const Tensor& a) {

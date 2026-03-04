@@ -40,6 +40,27 @@ std::size_t element_size(DType dt) {
   }
 }
 
+class ReshapeBackward : public AutogradNode {
+public:
+  ReshapeBackward(std::shared_ptr<Tensor> a, std::vector<int64_t> original_shape)
+      : a_(std::move(a)), original_shape_(std::move(original_shape)) {}
+
+  std::vector<std::shared_ptr<Tensor>> inputs() const override {
+    return {a_};
+  }
+
+  void backward(const std::shared_ptr<Tensor>& grad_output) override {
+    if (!a_ || !a_->requires_grad()) return;
+    NoGradGuard guard;
+    Tensor g_view = grad_output->reshape(original_shape_);
+    a_->accumulate_grad(g_view);
+  }
+
+private:
+  std::shared_ptr<Tensor> a_;
+  std::vector<int64_t> original_shape_;
+};
+
 }  // namespace
 
 Tensor::Tensor(const std::vector<int64_t>& shape, DType dtype, Device device, bool requires_grad) {
@@ -113,8 +134,17 @@ Tensor Tensor::reshape(const std::vector<int64_t>& new_shape) const {
   impl->numel = impl_->numel;
   impl->dtype = impl_->dtype;
   impl->device = impl_->device;
-  impl->requires_grad = false;
-  return Tensor(impl);
+  impl->requires_grad = impl_->requires_grad;
+  Tensor out(impl);
+
+  if (is_grad_enabled() && impl_->requires_grad) {
+    out.set_requires_grad(true);
+    auto node = std::make_shared<ReshapeBackward>(
+        std::make_shared<Tensor>(*this),
+        this->shape());
+    out.set_grad_fn(node);
+  }
+  return out;
 }
 
 void Tensor::copy_(const Tensor& other) {

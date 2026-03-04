@@ -218,6 +218,47 @@ static void test_mean_single_row() {
   assert(std::fabs(m.data_float()[0] - 2.f) < 1e-5f);
 }
 
+// Reshape should not detach: gradients through reshape must flow back to the original.
+static void test_reshape_preserves_autograd() {
+  Tensor t = Tensor::from_data({0.f, 1.f, 2.f, 3.f, 4.f, 5.f}, {2, 3}, true);
+  Tensor r = t.reshape({3, 2});
+  Tensor loss = sum(r);
+  loss.backward();
+  assert(t.grad() != nullptr);
+  const float* g = t.grad()->data_float();
+  for (int i = 0; i < 6; ++i) {
+    assert(std::fabs(g[i] - 1.f) < 1e-5f);
+  }
+}
+
+// sum(x, dim) should be differentiable (2D) and broadcast grad along reduced axis.
+static void test_sum_dim_backward() {
+  // x shape (2,3); sum over dim=1 -> (2)
+  Tensor x = Tensor::from_data({1.f, 2.f, 3.f, 4.f, 5.f, 6.f}, {2, 3}, true);
+  Tensor s = sum(x, 1, false);  // shape (2)
+  Tensor loss = sum(s);
+  loss.backward();
+  assert(x.grad() != nullptr);
+  const float* g = x.grad()->data_float();
+  for (int i = 0; i < 6; ++i) {
+    assert(std::fabs(g[i] - 1.f) < 1e-5f);
+  }
+}
+
+// mean(x, dim) should be differentiable (2D) and scale grad by 1/denom.
+static void test_mean_dim_backward() {
+  // x shape (2,3); mean over dim=1 -> (2); loss=sum(mean) => each element grad = 1/3
+  Tensor x = Tensor::from_data({1.f, 2.f, 3.f, 4.f, 5.f, 6.f}, {2, 3}, true);
+  Tensor m = mean(x, 1, false);
+  Tensor loss = sum(m);
+  loss.backward();
+  assert(x.grad() != nullptr);
+  const float* g = x.grad()->data_float();
+  for (int i = 0; i < 6; ++i) {
+    assert(std::fabs(g[i] - (1.f / 3.f)) < 1e-5f);
+  }
+}
+
 // Finite-difference gradient check: compare autograd grad with numerical grad.
 static void grad_check_add() {
   Tensor a = Tensor::from_data({1.f, 2.f, 3.f}, {3}, true);
