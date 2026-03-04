@@ -92,6 +92,24 @@ public:
   Tensor operator()(const Tensor& logits, const Tensor& targets);
 };
 
+/**
+ * Scaled dot-product attention: out = softmax(mask(Q @ K^T / sqrt(d_k))) @ V.
+ * Q, K, V: (T, D) float32 (sequence length T, head dimension D).
+ * If causal is true, positions can only attend to earlier positions (mask j>i to -inf).
+ * Returns (T, D).
+ */
+Tensor scaled_dot_product_attention(const Tensor& Q,
+                                    const Tensor& K,
+                                    const Tensor& V,
+                                    bool causal = true);
+
+/** Module wrapper for scaled dot-product attention (no parameters). */
+class ScaledDotProductAttention : public Module {
+public:
+  /** Forward: Q, K, V each (T, D). Returns (T, D). */
+  Tensor operator()(const Tensor& Q, const Tensor& K, const Tensor& V, bool causal = true);
+};
+
 /** Layer normalization over the last dimension. Normalize then scale + shift with gamma/beta. */
 class LayerNorm : public Module {
 public:

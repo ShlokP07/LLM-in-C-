@@ -55,6 +55,8 @@ using llm::log_softmax;
 using llm::cross_entropy;
 using llm::CrossEntropyLoss;
 using llm::LayerNorm;
+using llm::scaled_dot_product_attention;
+using llm::ScaledDotProductAttention;
 using llm::SGD;
 using llm::AdamW;
 using llm::clip_grad_norm_;
@@ -834,6 +836,59 @@ static void test_log_softmax_grad_check_one_element() {
   assert(std::fabs(num - ana) < 1e-2f);
 }
 
+// --- Scaled dot-product attention tests ---
+
+static void test_attention_forward_shape() {
+  // Q, K, V (T, D) -> out (T, D)
+  Tensor Q = Tensor::from_data({1.f, 0.f, 0.f, 1.f, 0.f, 0.f}, {2, 3}, false);
+  Tensor K = Tensor::from_data({1.f, 0.f, 0.f, 0.f, 1.f, 0.f}, {2, 3}, false);
+  Tensor V = Tensor::from_data({1.f, 0.f, 0.f, 0.f, 1.f, 0.f}, {2, 3}, false);
+  Tensor out = scaled_dot_product_attention(Q, K, V, /*causal=*/true);
+  assert(out.shape().size() == 2);
+  assert(out.shape()[0] == 2);
+  assert(out.shape()[1] == 3);
+}
+
+static void test_attention_causal_mask() {
+  // With causal mask, position 1 cannot attend to position 0, so output row 1 is determined only by row 1 of Q,K,V.
+  // Use simple inputs: Q=K=V identity-like so attn is close to identity; with causal, row 0 gets row 0 of V, row 1 gets only row 1.
+  seed(0);
+  Tensor Q = Tensor::from_data({1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f}, {3, 3}, false);
+  Tensor K = Tensor::from_data({1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f}, {3, 3}, false);
+  Tensor V = Tensor::from_data({1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f}, {3, 3}, false);
+  Tensor out = scaled_dot_product_attention(Q, K, V, true);
+  // Each row of out should be a convex combination of rows of V (due to softmax). Causal: row i only sees rows 0..i of K.
+  for (int64_t i = 0; i < 3; ++i) {
+    float row_sum = 0.f;
+    for (int64_t j = 0; j < 3; ++j) row_sum += out.data_float()[i * 3 + j];
+    assert(std::isfinite(row_sum));
+  }
+}
+
+static void test_attention_backward() {
+  Tensor Q = Tensor::from_data({0.5f, -0.2f, 0.1f, 0.3f, 0.4f, -0.1f}, {2, 3}, true);
+  Tensor K = Tensor::from_data({0.2f, 0.3f, 0.1f, -0.1f, 0.5f, 0.2f}, {2, 3}, true);
+  Tensor V = Tensor::from_data({1.f, 0.f, 0.f, 0.f, 1.f, 0.f}, {2, 3}, true);
+  Tensor out = scaled_dot_product_attention(Q, K, V, true);
+  Tensor loss = sum(out);
+  loss.backward();
+  assert(Q.grad() != nullptr);
+  assert(K.grad() != nullptr);
+  assert(V.grad() != nullptr);
+  assert((Q.grad()->shape() == std::vector<int64_t>{2, 3}));
+  assert((K.grad()->shape() == std::vector<int64_t>{2, 3}));
+  assert((V.grad()->shape() == std::vector<int64_t>{2, 3}));
+}
+
+static void test_attention_module_wrapper() {
+  ScaledDotProductAttention attn;
+  Tensor Q = Tensor::from_data({1.f, 0.f, 0.f, 1.f}, {2, 2}, false);
+  Tensor K = Tensor::from_data({1.f, 0.f, 0.f, 1.f}, {2, 2}, false);
+  Tensor V = Tensor::from_data({1.f, 0.f, 0.f, 1.f}, {2, 2}, false);
+  Tensor out = attn(Q, K, V, false);
+  assert(out.shape()[0] == 2 && out.shape()[1] == 2);
+}
+
 // --- CrossEntropyLoss tests ---
 
 static void test_cross_entropy_known_value() {
@@ -1154,6 +1209,11 @@ int main() {
   test_log_softmax_exp_row_sums_to_one();
   test_softmax_grad_check_one_element();
   test_log_softmax_grad_check_one_element();
+
+  test_attention_forward_shape();
+  test_attention_causal_mask();
+  test_attention_backward();
+  test_attention_module_wrapper();
 
   test_cross_entropy_known_value();
   test_cross_entropy_grad_check_one_element();

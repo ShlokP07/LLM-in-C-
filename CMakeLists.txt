@@ -23,7 +23,7 @@ else()
   message(STATUS "No BLAS/OpenBLAS found - using naive matmul")
 endif()
 
-# Source structure (only files that exist; attention, data, checkpoint not yet implemented)
+# Source structure (only files that exist; data, checkpoint not yet implemented)
 set(LLM_SOURCES
   src/tensor.cpp
   src/autograd.cpp
@@ -35,6 +35,7 @@ set(LLM_SOURCES
   src/nn/dropout.cpp
   src/nn/activation.cpp
   src/nn/softmax.cpp
+  src/nn/attention.cpp
   src/nn/loss.cpp
   src/optim/sgd.cpp
   src/optim/adamw.cpp
@@ -55,6 +56,7 @@ add_library(llm_core STATIC
   src/nn/dropout.cpp
   src/nn/activation.cpp
   src/nn/softmax.cpp
+  src/nn/attention.cpp
   src/nn/loss.cpp
   src/optim/sgd.cpp
   src/optim/adamw.cpp
