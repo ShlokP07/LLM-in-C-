@@ -2,6 +2,7 @@
 
 #include <llm/module.hpp>
 
+#include <cstdint>
 #include <vector>
 
 namespace llm {
@@ -24,6 +25,7 @@ public:
 
   float lr() const { return lr_; }
   float weight_decay() const { return weight_decay_; }
+  void set_lr(float lr) { lr_ = lr; }
 
 private:
   std::vector<Parameter*> params_;
@@ -58,6 +60,8 @@ public:
   float weight_decay() const { return weight_decay_; }
   int64_t step_count() const { return step_count_; }
 
+  void set_lr(float lr) { lr_ = lr; }
+
   /** Optimizer state for checkpointing: step_count and per-parameter m/v (keys "step_count", "0_m", "0_v", ...). */
   Module::StateDict state_dict() const;
   void load_state_dict(const Module::StateDict& state);
@@ -85,6 +89,43 @@ private:
  * @return Total gradient norm before clipping (0 if no grads).
  */
 float clip_grad_norm_(std::vector<Parameter*>& params, float max_norm);
+
+/**
+ * Simple step learning rate scheduler:
+ *   lr(step) = base_lr * gamma^(floor(step / step_size))
+ *
+ * Does not own an optimizer; use apply() to update any optimizer that
+ * exposes set_lr(float).
+ */
+class StepLR {
+public:
+  StepLR(float base_lr, int64_t step_size, float gamma = 0.1f)
+      : base_lr_(base_lr), step_size_(step_size), gamma_(gamma) {}
+
+  float base_lr() const { return base_lr_; }
+  int64_t step_size() const { return step_size_; }
+  float gamma() const { return gamma_; }
+
+  float get_lr(int64_t step) const {
+    if (step_size_ <= 0) return base_lr_;
+    if (step < 0) step = 0;
+    int64_t k = step / step_size_;
+    float factor = 1.0f;
+    for (int64_t i = 0; i < k; ++i)
+      factor *= gamma_;
+    return base_lr_ * factor;
+  }
+
+  template <typename Optim>
+  void apply(Optim& opt, int64_t step) const {
+    opt.set_lr(get_lr(step));
+  }
+
+private:
+  float base_lr_;
+  int64_t step_size_;
+  float gamma_;
+};
 
 }  // namespace llm
 

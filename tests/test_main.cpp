@@ -1256,6 +1256,20 @@ static void test_clip_grad_norm_excludes_params_without_grad() {
   assert(std::fabs(a.grad()->data_float()[0] - 2.f) < 1e-5f);
 }
 
+// --- LR scheduler tests ---
+
+static void test_step_lr_schedule() {
+  llm::StepLR sched(1e-3f, /*step_size=*/10, /*gamma=*/0.1f);
+  // Before first decay
+  assert(std::fabs(sched.get_lr(0) - 1e-3f) < 1e-9f);
+  assert(std::fabs(sched.get_lr(9) - 1e-3f) < 1e-9f);
+  // After one decay
+  assert(std::fabs(sched.get_lr(10) - 1e-4f) < 1e-9f);
+  assert(std::fabs(sched.get_lr(19) - 1e-4f) < 1e-9f);
+  // After two decays
+  assert(std::fabs(sched.get_lr(20) - 1e-5f) < 1e-9f);
+}
+
 // --- Module state_dict (documents serialization API for readers) ---
 
 // state_dict() returns a map of dotted names -> tensors (e.g. "weight", "bias" for Linear).
@@ -1431,6 +1445,7 @@ static void run_loss_and_optim_tests() {
   test_clip_grad_norm_empty_params();
   test_clip_grad_norm_below_max_no_change();
   test_clip_grad_norm_excludes_params_without_grad();
+  test_step_lr_schedule();
 }
 
 static void run_edge_case_nn_tests() {

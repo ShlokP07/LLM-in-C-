@@ -180,7 +180,10 @@ int main() {
   MiniGPT model(config);
   model.train();
   auto params = model.parameters();
-  AdamW optimizer(params, 1e-3f, 0.9f, 0.98f, 1e-5f, 0.01f);
+  constexpr float base_lr = 1e-3f;
+  AdamW optimizer(params, base_lr, 0.9f, 0.98f, 1e-5f, 0.01f);
+  // Simple step LR scheduler: decay LR by 0.5 every 100 steps.
+  StepLR lr_sched(base_lr, /*step_size=*/100, /*gamma=*/0.5f);
 
   const int64_t T = 8;
   Tensor token_ids({T}, DType::Int64, Device::cpu(), false);
@@ -195,12 +198,15 @@ int main() {
             << ", vocab=" << config.vocab_size << ", seq_len=" << T << std::endl;
 
   for (int step = 0; step < 5; ++step) {
+    lr_sched.apply(optimizer, step);
     optimizer.zero_grad();
     Tensor logits = model.forward(token_ids);
     Tensor loss = cross_entropy(logits, target_ids);
     loss.backward();
     optimizer.step();
-    std::cout << "  step " << step << " loss " << loss.data_float()[0] << std::endl;
+    std::cout << "  step " << step
+              << " lr " << optimizer.lr()
+              << " loss " << loss.data_float()[0] << std::endl;
   }
 
   std::cout << "Done." << std::endl;

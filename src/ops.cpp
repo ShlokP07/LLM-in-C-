@@ -5,6 +5,10 @@
 #include <cstring>
 #include <stdexcept>
 
+#ifdef LLM_USE_BLAS
+#include <cblas.h>
+#endif
+
 namespace llm {
 
 namespace {
@@ -802,12 +806,25 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
   const float* pb = b.data_float();
   float* po = out.data_float();
   std::memset(po, 0, static_cast<size_t>(M * N) * sizeof(float));
+
+#ifdef LLM_USE_BLAS
+  // Use BLAS (if available) for faster matmul: C = A @ B
+  // A: (M,K), B: (K,N), row-major layout.
+  cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+              static_cast<int>(M), static_cast<int>(N), static_cast<int>(K),
+              1.0f,
+              pa, static_cast<int>(K),
+              pb, static_cast<int>(N),
+              0.0f,
+              po, static_cast<int>(N));
+#else
   for (int64_t i = 0; i < M; ++i)
     for (int64_t k = 0; k < K; ++k) {
       float aik = pa[i * K + k];
       for (int64_t j = 0; j < N; ++j)
         po[i * N + j] += aik * pb[k * N + j];
     }
+#endif
 
   if (is_grad_enabled() && (a.requires_grad() || b.requires_grad())) {
     out.set_requires_grad(true);
