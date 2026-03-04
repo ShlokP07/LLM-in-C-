@@ -79,6 +79,19 @@ public:
   Tensor operator()(const Tensor& x);
 };
 
+/**
+ * Cross-entropy loss for classification.
+ * logits: (N, C) float32, targets: (N,) int64 with class indices in [0, C).
+ * Returns scalar loss (mean reduction).
+ */
+Tensor cross_entropy(const Tensor& logits, const Tensor& targets);
+
+/** Cross-entropy loss module wrapper (mean reduction). */
+class CrossEntropyLoss : public Module {
+public:
+  Tensor operator()(const Tensor& logits, const Tensor& targets);
+};
+
 /** Layer normalization over the last dimension. Normalize then scale + shift with gamma/beta. */
 class LayerNorm : public Module {
 public:

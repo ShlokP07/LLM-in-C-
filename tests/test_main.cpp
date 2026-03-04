@@ -45,6 +45,8 @@ using llm::GELU;
 using llm::gelu;
 using llm::softmax;
 using llm::log_softmax;
+using llm::cross_entropy;
+using llm::CrossEntropyLoss;
 using llm::LayerNorm;
 
 // Verify that version() returns some non-null, non-empty string.
@@ -756,6 +758,57 @@ static void test_log_softmax_grad_check_one_element() {
   assert(std::fabs(num - ana) < 1e-2f);
 }
 
+// --- CrossEntropyLoss tests ---
+
+static void test_cross_entropy_known_value() {
+  // logits = [0,0] => probs = [0.5,0.5], target=0 => loss = -log(0.5)
+  Tensor logits = Tensor::from_data({0.f, 0.f}, {1, 2}, false);
+  Tensor targets({1}, DType::Int64, Device::cpu(), false);
+  targets.data_int64()[0] = 0;
+  Tensor loss = cross_entropy(logits, targets);
+  assert(loss.numel() == 1);
+  assert(std::fabs(loss.data_float()[0] - 0.69314718f) < 1e-4f);
+}
+
+static void test_cross_entropy_grad_check_one_element() {
+  Tensor logits = Tensor::from_data({0.2f, -0.1f, 0.3f}, {1, 3}, true);
+  Tensor targets({1}, DType::Int64, Device::cpu(), false);
+  targets.data_int64()[0] = 2;
+  Tensor loss = cross_entropy(logits, targets);
+  loss.backward();
+  assert(logits.grad() != nullptr);
+
+  const float eps = 1e-4f;
+  float lp = 0.f, lm = 0.f;
+  {
+    llm::NoGradGuard guard;
+    Tensor lp_logits = Tensor::from_data({0.2f + eps, -0.1f, 0.3f}, {1, 3}, false);
+    lp = cross_entropy(lp_logits, targets).data_float()[0];
+  }
+  {
+    llm::NoGradGuard guard;
+    Tensor lm_logits = Tensor::from_data({0.2f - eps, -0.1f, 0.3f}, {1, 3}, false);
+    lm = cross_entropy(lm_logits, targets).data_float()[0];
+  }
+  float num = (lp - lm) / (2.f * eps);
+  float ana = logits.grad()->data_float()[0];
+  assert(std::fabs(num - ana) < 1e-2f);
+
+  // Gradient across classes sums to ~0 for each sample.
+  float sumg = logits.grad()->data_float()[0] + logits.grad()->data_float()[1] + logits.grad()->data_float()[2];
+  assert(std::fabs(sumg) < 1e-5f);
+}
+
+static void test_cross_entropy_module_wrapper() {
+  CrossEntropyLoss cel;
+  Tensor logits = Tensor::from_data({0.f, 0.f, 0.f, 0.f}, {2, 2}, false);
+  Tensor targets({2}, DType::Int64, Device::cpu(), false);
+  targets.data_int64()[0] = 0;
+  targets.data_int64()[1] = 1;
+  Tensor loss = cel(logits, targets);
+  assert(loss.numel() == 1);
+}
+
 int main() {
   std::cout << "Running LLM tests..." << std::endl;
 
@@ -808,6 +861,10 @@ int main() {
   test_log_softmax_exp_row_sums_to_one();
   test_softmax_grad_check_one_element();
   test_log_softmax_grad_check_one_element();
+
+  test_cross_entropy_known_value();
+  test_cross_entropy_grad_check_one_element();
+  test_cross_entropy_module_wrapper();
 
   std::cout << "All Tensor and autograd tests passed." << std::endl;
   return 0;
