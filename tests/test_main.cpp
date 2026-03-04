@@ -1332,7 +1332,9 @@ static void test_dropout_p_zero_no_drop() {
     assert(std::fabs(y.data_float()[i] - x.data_float()[i]) < 1e-5f);
 }
 
-void run_all_tests() {
+// Grouped runners by domain to keep the test orchestration readable.
+
+static void run_tensor_and_autograd_tests() {
   test_version();
   test_tensor_basic_shape();
   test_tensor_zeros();
@@ -1356,9 +1358,14 @@ void run_all_tests() {
   test_no_grad();
   test_detach();
   test_detach_stops_gradient_flow();
+}
+
+static void run_module_and_state_tests() {
   test_module_parameters_and_modes();
   test_module_state_dict_collects_named_params();
+}
 
+static void run_rng_and_init_tests() {
   test_seed_uniform_determinism_and_range();
   test_uniform_range();
   test_seed_normal_determinism();
@@ -1366,7 +1373,9 @@ void run_all_tests() {
   test_zeros_float32();
   test_zeros_int64();
   test_xavier_uniform_range();
+}
 
+static void run_nn_layer_tests() {
   test_linear_forward_shape();
   test_linear_no_bias_forward_shape();
   test_linear_backward_weight_and_bias();
@@ -1395,7 +1404,9 @@ void run_all_tests() {
   test_attention_causal_mask();
   test_attention_backward();
   test_attention_module_wrapper();
+}
 
+static void run_data_and_checkpoint_tests() {
   test_tensor_dataset_size_and_get();
   test_dataloader_num_batches_and_batch_shape();
   test_dataloader_shuffle_deterministic();
@@ -1404,7 +1415,9 @@ void run_all_tests() {
   test_save_load_state_dict_module_roundtrip();
   test_load_state_dict_restores_parameters();
   test_adamw_state_dict_roundtrip();
+}
 
+static void run_loss_and_optim_tests() {
   test_cross_entropy_known_value();
   test_cross_entropy_grad_check_one_element();
   test_cross_entropy_module_wrapper();
@@ -1418,10 +1431,22 @@ void run_all_tests() {
   test_clip_grad_norm_empty_params();
   test_clip_grad_norm_below_max_no_change();
   test_clip_grad_norm_excludes_params_without_grad();
+}
 
+static void run_edge_case_nn_tests() {
   test_layernorm_constant_input();
   test_softmax_single_row();
   test_cross_entropy_single_sample_single_class();
   test_embedding_single_vocab();
   test_dropout_p_zero_no_drop();
+}
+
+void run_all_tests() {
+  run_tensor_and_autograd_tests();
+  run_module_and_state_tests();
+  run_rng_and_init_tests();
+  run_nn_layer_tests();
+  run_data_and_checkpoint_tests();
+  run_loss_and_optim_tests();
+  run_edge_case_nn_tests();
 }
