@@ -1,5 +1,11 @@
 /**
  * Test entry point for basic Tensor sanity checks and autograd gradient checks.
+ *
+ * Tests are grouped into: version/tensor basics, grad checks, autograd (no_grad, detach),
+ * module/parameters, RNG/init, NN layers (Linear, LayerNorm, Embedding, Dropout, GELU,
+ * Softmax, CrossEntropy), optimizers (SGD, AdamW, clip_grad_norm), and edge-case tests.
+ * Edge-case tests cover single-element tensors, empty/null grads, detach stopping flow,
+ * state_dict, and layer behavior with constant input, single row, or single class.
  */
 
 #include <llm/llm.hpp>
@@ -131,6 +137,72 @@ static void test_tensor_reshape() {
     threw = true;
   }
   assert(threw);
+}
+
+// --- Tensor & ops edge cases (help readers see scalar, single-element, and reshape behavior) ---
+
+// Single-element tensor behaves like a scalar: from_data one value, sum gives same value, backward fills grad.
+static void test_tensor_single_element_scalar_like() {
+  Tensor t = Tensor::from_data({42.f}, {1}, true);
+  assert(t.numel() == 1);
+  Tensor s = sum(t);
+  s.backward();
+  assert(t.grad() != nullptr);
+  assert(std::fabs(t.grad()->data_float()[0] - 1.f) < 1e-5f);
+}
+
+// Reshape to (1, N) or (N, 1): numel preserved, strides/shape correct.
+static void test_tensor_reshape_to_one_dim() {
+  Tensor t = Tensor::from_data({1.f, 2.f, 3.f, 4.f}, {4}, false);
+  Tensor r1 = t.reshape({1, 4});
+  Tensor r2 = t.reshape({4, 1});
+  assert(r1.numel() == 4 && r2.numel() == 4);
+  assert(r1.shape()[0] == 1 && r1.shape()[1] == 4);
+  assert(r2.shape()[0] == 4 && r2.shape()[1] == 1);
+}
+
+// Matmul of (1,1) x (1,1): scalar-like matrix multiply.
+static void test_matmul_1x1_edge() {
+  Tensor a = Tensor::from_data({3.f}, {1, 1}, true);
+  Tensor b = Tensor::from_data({7.f}, {1, 1}, true);
+  Tensor c = matmul(a, b);
+  assert(c.numel() == 1);
+  assert(std::fabs(c.data_float()[0] - 21.f) < 1e-5f);
+  Tensor loss = sum(c);
+  loss.backward();
+  assert(a.grad() != nullptr && b.grad() != nullptr);
+  assert(std::fabs(a.grad()->data_float()[0] - 7.f) < 1e-5f);
+  assert(std::fabs(b.grad()->data_float()[0] - 3.f) < 1e-5f);
+}
+
+// Same tensor used twice in the graph: gradient accumulates (d/da (a+a) = 2).
+static void test_backward_grad_accumulation() {
+  Tensor a = Tensor::from_data({1.f, 2.f}, {2}, true);
+  Tensor b = add(a, a);  // b = a + a
+  Tensor loss = sum(b);
+  loss.backward();
+  assert(a.grad() != nullptr);
+  assert(std::fabs(a.grad()->data_float()[0] - 2.f) < 1e-5f);
+  assert(std::fabs(a.grad()->data_float()[1] - 2.f) < 1e-5f);
+}
+
+// Backward through detach: gradient does not flow to leaves before the detach.
+// (Detached tensor has requires_grad=false, so grad may not be stored on c; the important part is a gets nothing.)
+static void test_detach_stops_gradient_flow() {
+  Tensor a = Tensor::from_data({1.f, 2.f}, {2}, true);
+  Tensor b = add(a, Tensor::from_data({0.f, 0.f}, {2}, false));
+  Tensor c = b.detach();
+  Tensor loss = sum(c);
+  loss.backward();
+  assert(a.grad() == nullptr);  // detach breaks the chain; gradient does not reach a
+}
+
+// Mean over a single row: shape (1, D) -> mean(dim=1) -> (1,).
+static void test_mean_single_row() {
+  Tensor a = Tensor::from_data({1.f, 2.f, 3.f}, {1, 3}, false);
+  Tensor m = mean(a, 1, false);
+  assert(m.numel() == 1);
+  assert(std::fabs(m.data_float()[0] - 2.f) < 1e-5f);
 }
 
 // Finite-difference gradient check: compare autograd grad with numerical grad.
@@ -881,6 +953,147 @@ static void test_clip_grad_norm() {
   assert(std::fabs(gw[1] - 1.6f) < 1e-5f);
 }
 
+// --- Optimizer edge cases (empty params, null grad, clip no-op) ---
+
+// SGD with no parameters: step() and zero_grad() must not crash.
+static void test_sgd_empty_params() {
+  std::vector<Parameter*> params;
+  SGD opt(params, 0.1f, 0.f);
+  opt.zero_grad();
+  opt.step();
+}
+
+// SGD step when a parameter has no grad (e.g. zero_grad then step without backward): param is skipped, no crash.
+static void test_sgd_skips_param_without_grad() {
+  Parameter w = Parameter::zeros({1});
+  w.set_requires_grad(true);
+  std::vector<Parameter*> p = {&w};
+  SGD opt(p, 0.1f, 0.f);
+  opt.zero_grad();
+  opt.step();
+  assert(std::fabs(w.data_float()[0]) < 1e-6f);
+}
+
+// AdamW step_count() increments each step (helps readers see optimizer state).
+static void test_adamw_step_count_increments() {
+  Parameter w = Parameter::zeros({1});
+  w.set_requires_grad(true);
+  std::vector<Parameter*> p = {&w};
+  AdamW opt(p, 0.01f);
+  assert(opt.step_count() == 0);
+  w.set_grad(std::make_shared<Tensor>(Tensor::from_data({1.f}, {1}, false)));
+  opt.step();
+  assert(opt.step_count() == 1);
+  opt.step();
+  assert(opt.step_count() == 2);
+}
+
+// clip_grad_norm_ with no parameters returns 0 and does nothing.
+static void test_clip_grad_norm_empty_params() {
+  std::vector<Parameter*> params;
+  float n = clip_grad_norm_(params, 1.f);
+  assert(n == 0.f);
+}
+
+// When total norm is below max_norm, grads are unchanged.
+static void test_clip_grad_norm_below_max_no_change() {
+  Parameter p = Parameter::zeros({2});
+  p.set_grad(std::make_shared<Tensor>(Tensor::from_data({0.3f, 0.4f}, {2}, false)));
+  std::vector<Parameter*> params = {&p};
+  float norm = clip_grad_norm_(params, 10.f);
+  assert(std::fabs(norm - 0.5f) < 1e-5f);
+  assert(std::fabs(p.grad()->data_float()[0] - 0.3f) < 1e-5f);
+  assert(std::fabs(p.grad()->data_float()[1] - 0.4f) < 1e-5f);
+}
+
+// Parameters with null grad are excluded from norm; only params with grad are clipped.
+static void test_clip_grad_norm_excludes_params_without_grad() {
+  Parameter a = Parameter::zeros({1});
+  Parameter b = Parameter::zeros({1});
+  a.set_grad(std::make_shared<Tensor>(Tensor::from_data({3.f}, {1}, false)));
+  b.set_grad(nullptr);
+  std::vector<Parameter*> params = {&a, &b};
+  float n = clip_grad_norm_(params, 2.f);
+  assert(std::fabs(n - 3.f) < 1e-5f);
+  assert(std::fabs(a.grad()->data_float()[0] - 2.f) < 1e-5f);
+}
+
+// --- Module state_dict (documents serialization API for readers) ---
+
+// state_dict() returns a map of dotted names -> tensors (e.g. "weight", "bias" for Linear).
+static void test_module_state_dict_collects_named_params() {
+  Linear linear(2, 3, true);
+  auto state = linear.state_dict();
+  assert(state.size() >= 2);
+  bool has_weight = false, has_bias = false;
+  for (const auto& kv : state) {
+    if (kv.first.find("weight") != std::string::npos) {
+      has_weight = true;
+      assert((kv.second.shape() == std::vector<int64_t>{3, 2}));
+    }
+    if (kv.first.find("bias") != std::string::npos) {
+      has_bias = true;
+      assert((kv.second.shape() == std::vector<int64_t>{3}));
+    }
+  }
+  assert(has_weight && has_bias);
+}
+
+// --- NN layer edge cases (constant input, single row, single class) ---
+
+// LayerNorm with constant input: output is beta (normalized part is 0, then gamma*0+beta).
+static void test_layernorm_constant_input() {
+  LayerNorm ln(3, 1e-5f);
+  Tensor x = Tensor::from_data({5.f, 5.f, 5.f, 5.f, 5.f, 5.f}, {2, 3}, false);
+  Tensor y = ln(x);
+  for (int64_t i = 0; i < y.numel(); ++i) {
+    assert(std::fabs(y.data_float()[i]) < 1e-4f);
+  }
+}
+
+// Softmax with a single row (1, D): output shape (1, D), row sum 1.
+static void test_softmax_single_row() {
+  Tensor x = Tensor::from_data({1.f, 2.f, 3.f}, {1, 3}, false);
+  Tensor y = softmax(x);
+  assert(y.shape()[0] == 1 && y.shape()[1] == 3);
+  float row_sum = 0.f;
+  for (int64_t j = 0; j < 3; ++j) row_sum += y.data_float()[j];
+  assert(std::fabs(row_sum - 1.f) < 1e-5f);
+}
+
+// CrossEntropy with single sample and single class (C=1): edge case.
+static void test_cross_entropy_single_sample_single_class() {
+  Tensor logits = Tensor::from_data({0.f}, {1, 1}, false);
+  Tensor targets({1}, DType::Int64, Device::cpu(), false);
+  targets.data_int64()[0] = 0;
+  Tensor loss = cross_entropy(logits, targets);
+  assert(loss.numel() == 1);
+  assert(std::isfinite(loss.data_float()[0]));
+}
+
+// Embedding with num_embeddings=1: only one row in weight, all indices must be 0.
+static void test_embedding_single_vocab() {
+  seed(0);
+  Embedding emb(1, 2);
+  Tensor indices({2}, DType::Int64, Device::cpu(), false);
+  indices.data_int64()[0] = 0;
+  indices.data_int64()[1] = 0;
+  Tensor y = emb(indices);
+  assert(y.shape()[0] == 2 && y.shape()[1] == 2);
+  assert(std::fabs(y.data_float()[0] - y.data_float()[2]) < 1e-5f);
+}
+
+// Dropout p=0: no masking, scale 1, output equals input in train mode.
+static void test_dropout_p_zero_no_drop() {
+  Dropout d(0.f);
+  d.train();
+  Tensor x = Tensor::from_data({1.f, 2.f, 3.f}, {1, 3}, false);
+  seed(99);
+  Tensor y = d(x);
+  for (int64_t i = 0; i < 3; ++i)
+    assert(std::fabs(y.data_float()[i] - x.data_float()[i]) < 1e-5f);
+}
+
 int main() {
   std::cout << "Running LLM tests..." << std::endl;
 
@@ -889,6 +1102,12 @@ int main() {
   test_tensor_zeros();
   test_tensor_from_data();
   test_tensor_reshape();
+  test_tensor_single_element_scalar_like();
+  test_tensor_reshape_to_one_dim();
+  test_matmul_1x1_edge();
+  test_backward_grad_accumulation();
+  test_detach_stops_gradient_flow();
+  test_mean_single_row();
 
   grad_check_add();
   grad_check_mul();
@@ -900,7 +1119,9 @@ int main() {
   test_elementwise_and_reductions_shapes();
   test_no_grad();
   test_detach();
+  test_detach_stops_gradient_flow();
   test_module_parameters_and_modes();
+  test_module_state_dict_collects_named_params();
 
   test_seed_uniform_determinism_and_range();
   test_uniform_range();
@@ -941,6 +1162,18 @@ int main() {
   test_sgd_quadratic_descent();
   test_adamw_quadratic_descent();
   test_clip_grad_norm();
+  test_sgd_empty_params();
+  test_sgd_skips_param_without_grad();
+  test_adamw_step_count_increments();
+  test_clip_grad_norm_empty_params();
+  test_clip_grad_norm_below_max_no_change();
+  test_clip_grad_norm_excludes_params_without_grad();
+
+  test_layernorm_constant_input();
+  test_softmax_single_row();
+  test_cross_entropy_single_sample_single_class();
+  test_embedding_single_vocab();
+  test_dropout_p_zero_no_drop();
 
   std::cout << "All Tensor and autograd tests passed." << std::endl;
   return 0;
