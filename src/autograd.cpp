@@ -5,6 +5,7 @@
 #include <functional>
 #include <stack>
 #include <unordered_set>
+#include <stdexcept>
 
 namespace llm {
 

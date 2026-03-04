@@ -8,8 +8,55 @@ Minimal Tensor + Autograd + Transformer framework for training miniGPT. CPU-firs
 
 - **C++17** compiler (MSVC 2019+, GCC 8+, Clang 7+)
 - **CMake** 3.16+
+- (Optional but recommended) **vcpkg** for dependency management (OpenBLAS)
 
-### Configure & Build
+### Install vcpkg (once, global)
+
+```powershell
+git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+cd C:\vcpkg
+.\bootstrap-vcpkg.bat
+```
+
+Optionally set an environment variable so you don't have to repeat the path:
+
+```powershell
+$env:VCPKG_ROOT="C:\vcpkg"   # add this to your user env vars for persistence
+```
+
+### Configure & Build (with OpenBLAS via vcpkg)
+
+From the project root:
+
+```powershell
+cd "d:\Downloads\VS Code Projects\LLM From Scartch in C++"
+
+# Install dependencies declared in vcpkg.json (includes openblas)
+C:\vcpkg\vcpkg.exe install --triplet x64-windows
+
+# Fresh build directory
+Remove-Item -Recurse -Force build  # PowerShell; or delete 'build' manually
+mkdir build
+cd build
+
+# Configure with vcpkg toolchain
+cmake .. `
+  -DCMAKE_TOOLCHAIN_FILE="C:\vcpkg\scripts\buildsystems\vcpkg.cmake" `
+  -DVCPKG_TARGET_TRIPLET=x64-windows
+
+# Build
+cmake --build . --config Release
+```
+
+On a successful configure you should see a line like:
+
+```text
+OpenBLAS found (via vcpkg or system)
+```
+
+which means `LLM_USE_BLAS` is defined and `matmul` will use the BLAS-backed `cblas_sgemm` path instead of the naive triple loop.
+
+If you prefer not to use vcpkg, you can still do a plain build:
 
 ```powershell
 cd "d:\Downloads\VS Code Projects\LLM From Scartch in C++"
@@ -19,15 +66,13 @@ cmake ..
 cmake --build . --config Release
 ```
 
-BLAS (for faster matmul) is optional and can be added later by installing a BLAS library manually and letting CMake's `find_package(BLAS)` locate it.
-
-### 3. Run
+### Run
 
 ```powershell
 .\Release\llm_main.exe
 ```
 
-### 4. Run Tests
+### Run Tests
 
 ```powershell
 ctest -C Release

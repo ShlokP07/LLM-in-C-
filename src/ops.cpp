@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 #include <stdexcept>
 
 #ifdef LLM_USE_BLAS
@@ -810,6 +811,11 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
 #ifdef LLM_USE_BLAS
   // Use BLAS (if available) for faster matmul: C = A @ B
   // A: (M,K), B: (K,N), row-major layout.
+  static bool printed = false;
+  if (!printed) {
+    std::fprintf(stderr, "[llm] matmul: using BLAS path\n");
+    printed = true;
+  }
   cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
               static_cast<int>(M), static_cast<int>(N), static_cast<int>(K),
               1.0f,
